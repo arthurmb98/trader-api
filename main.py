@@ -1,9 +1,9 @@
 import pandas as pd
-import read_dataset
+import read_data
 import train_models
 from fastapi import FastAPI
 
-modelos = train_models.train_models(read_dataset.read_dataset())
+modelos = train_models.train_models(read_data.read_dataset())
 
 app = FastAPI()
 
@@ -12,13 +12,14 @@ app = FastAPI()
 limiar_gap = 15 # gap_maximo = 10 # pontos
 erro_ordem = 120 # pontos
 
-@app.get("/api/{fechamento_ultimo}")
-def get_future_candle(fechamento_ultimo: float):
+@app.get("/")
+def root():
+    return "Candle predict api."
 
-    df_ultimo = pd.DataFrame({'Abertura': [fechamento_ultimo],
-                          'Mínimo': [fechamento_ultimo], 
-                          'Máximo': [fechamento_ultimo],
-                          'Fechamento': [fechamento_ultimo]})
+@app.get("/api/")
+def get_future_candle():
+
+    df_ultimo = read_data.read_ultimo_candle()
 
     predicao_abertura = modelos[0].predict(df_ultimo)
     predicao_minimo = modelos[1].predict(df_ultimo)
@@ -27,6 +28,9 @@ def get_future_candle(fechamento_ultimo: float):
     
     df = pd.DataFrame(data={'Abertura': [float(predicao_abertura)],'Máximo': [float(predicao_maximo)],'Mínimo': [float(predicao_minimo)],'Fechamento': [float(predicao_fechamento)]})
 
+    # Ultimo valor real
+    fechamento_ultimo = df_ultimo['Fechamento'][0].astype(float)
+    
     print()
     print("Fechamento atual: ", fechamento_ultimo)
     print()
