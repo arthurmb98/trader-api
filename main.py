@@ -77,7 +77,3 @@ def get_future_candle(fechamento_ultimo: float):
     
     return json
     
-    
-@app.get("/api/dataset")
-def get_future_candle():
-    return {"Dados de treinamento": read_dataset.read_dataset().head()}
