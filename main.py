@@ -17,11 +17,11 @@ erro_ordem = 120 # pontos
 def root():
     return "Daytrade 1min candle predict api."
 
-@app.get("/teste/")
+@app.get("/teste")
 def teste_dataset():
     return testes.teste_model()
 
-@app.get("/sinal/")
+@app.get("/sinal")
 def get_future_candle():
 
     df_ultimo = read_data.read_ultimo_candle()

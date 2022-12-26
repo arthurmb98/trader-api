@@ -5,7 +5,6 @@ import train_models
 def teste_model(data_test = read_data.read_dataset("datasets/WINM20_1min.csv"), banca = 100, qnt_contratos = 1):
     
     data_test = data_test[len(data_test)-480:len(data_test)]
-    data_test = data_test.sort_values(by=['Data', 'Hora'])
     modelos = train_models.train_models(data_test)
     
     limite_stop = 100
@@ -18,7 +17,7 @@ def teste_model(data_test = read_data.read_dataset("datasets/WINM20_1min.csv"), 
     gap_maximo = 100 # pontos # com o valor 100, tem-se um acerto de 91%
 
     var_minima = 0 # pontos # com o valor 1.2, tem-se um acerto de 81%
-    var_maximo = 20000 # pontos # com o valor 2.1, tem-se um acerto de 80% 
+    var_maximo = 2000 # pontos # com o valor 2.1, tem-se um acerto de 80% 
 
     #
     qnt_operacoes = 0
