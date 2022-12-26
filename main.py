@@ -10,18 +10,18 @@ app = FastAPI()
 
 # Configurações
 
-limiar_gap = 15 # gap_maximo = 10 # pontos
+limiar_gap = 10 # gap_maximo = 10 # pontos
 erro_ordem = 120 # pontos
 
 @app.get("/")
 def root():
     return "Daytrade 1min candle predict api."
 
-@app.get("/teste")
+@app.get("/teste/")
 def teste_dataset():
     return testes.teste_model()
 
-@app.get("/api/")
+@app.get("/sinal/")
 def get_future_candle():
 
     df_ultimo = read_data.read_ultimo_candle()
