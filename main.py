@@ -1,10 +1,10 @@
 import pandas as pd
-import read_data
-import train_models
-import testes
+import read_data as rd
+import train_models as tm
+import testes as t
 from fastapi import FastAPI
 
-modelos = train_models.train_models(read_data.read_dataset())
+modelos = tm.train_models(rd.read_dataset())
 
 app = FastAPI()
 
@@ -19,12 +19,12 @@ def root():
 
 @app.get("/teste")
 def teste_dataset():
-    return testes.teste_model()
+    return t.teste_model()
 
 @app.get("/sinal")
 def get_future_candle():
 
-    df_ultimo = read_data.read_ultimo_candle()
+    df_ultimo = rd.read_ultimo_candle()
 
     predicao_abertura = modelos[0].predict(df_ultimo)
     predicao_minimo = modelos[1].predict(df_ultimo)
@@ -47,8 +47,6 @@ def get_future_candle():
         "Valor da Ordem": "",
         "Candle Futuro": df
     }
-    
-    print(json)
     
     predicao_var = (predicao_abertura - predicao_fechamento).astype(float)
     predicao_gap = abs(predicao_abertura.astype(float) - fechamento_ultimo)
