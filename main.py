@@ -30,7 +30,7 @@ def get_future_candle():
     predicao_maximo = modelos[2].predict(df_ultimo)
     predicao_fechamento = modelos[3].predict(df_ultimo)
     
-    df = pd.DataFrame(data={'Abertura': [float(predicao_abertura)],'Mínimo': [float(predicao_minimo)], 'Máximo': [float(predicao_maximo)], 'Fechamento': [float(predicao_fechamento)]})
+    df = pd.DataFrame(data={'Abertura': [str(predicao_abertura)],'Mínimo': [str(predicao_minimo)], 'Máximo': [str(predicao_maximo)], 'Fechamento': [str(predicao_fechamento)]})
 
     # Ultimo valor real
     fechamento_ultimo = df_ultimo['Fechamento'][0].astype(float)
@@ -42,8 +42,9 @@ def get_future_candle():
     print()
     
     json = {
+        "Fechamento:": str(fechamento_ultimo),
         "Tipo de Ordem": "NÃO Efetuar ordem!",
-        "Valor da Ordem": "",
+        "Valor da Ordem": 0,
         "Candle Futuro": df
     }
     
@@ -58,7 +59,7 @@ def get_future_candle():
         else: # se o candle for negativo (preto)
             # efetua uma ordem de compra
             ordem_compra = True
-            ordem = predicao_maximo[0][0].astype(float) - erro_ordem 
+            ordem = float( predicao_maximo[0][0].astype(float) - erro_ordem )
         if(ordem_compra):
             print("Efetuar ordem de COMPRA!")
             print("Compra em: ", ordem)
@@ -70,7 +71,7 @@ def get_future_candle():
             print("Venda em: ", ordem)
             print()
             json["Tipo de Ordem"] = "VENDA"
-            json["Valor da Ordem"] = str(ordem)
+            json["Valor da Ordem"] = ordem
     else:
         json['Tipo de Ordem'] = "NÃO Efetuar ordem!"
         json['Valor da Ordem'] = ""
@@ -78,8 +79,7 @@ def get_future_candle():
         print()
         print("Gap: ", predicao_abertura - fechamento_ultimo)
         print()
-        print("Variação: ", predicao_fechamento - predicao_abertura)
-        
+        print("Variação: ", predicao_fechamento - predicao_abertura)   
     
     return json
     
