@@ -5,7 +5,7 @@ import train_models as tm
 def teste_model(data_test = rd.read_dataset("datasets/WINM20_1min.csv"), banca = 100, qnt_contratos = 1):
     
     data_test = data_test[len(data_test)-480:len(data_test)]
-    modelos = tm.train_models(data_test)
+    modelos = tm.train_models(data_test, False)
     
     # Configurações
     erro_ordem_teste = 100 # pontos # com o valor 115, tem-se um acerto de 78%
