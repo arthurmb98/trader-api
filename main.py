@@ -1,6 +1,7 @@
 import pandas as pd
 import read_data
 import train_models
+import testes
 from fastapi import FastAPI
 
 modelos = train_models.train_models(read_data.read_dataset())
@@ -14,7 +15,11 @@ erro_ordem = 120 # pontos
 
 @app.get("/")
 def root():
-    return "Candle predict api."
+    return "Daytrade 1min candle predict api."
+
+@app.get("/teste")
+def teste_dataset():
+    return testes.teste_model()
 
 @app.get("/api/")
 def get_future_candle():
@@ -26,7 +31,7 @@ def get_future_candle():
     predicao_maximo = modelos[2].predict(df_ultimo)
     predicao_fechamento = modelos[3].predict(df_ultimo)
     
-    df = pd.DataFrame(data={'Abertura': [float(predicao_abertura)],'Máximo': [float(predicao_maximo)],'Mínimo': [float(predicao_minimo)],'Fechamento': [float(predicao_fechamento)]})
+    df = pd.DataFrame(data={'Abertura': [float(predicao_abertura)],'Mínimo': [float(predicao_minimo)], 'Máximo': [float(predicao_maximo)], 'Fechamento': [float(predicao_fechamento)]})
 
     # Ultimo valor real
     fechamento_ultimo = df_ultimo['Fechamento'][0].astype(float)
