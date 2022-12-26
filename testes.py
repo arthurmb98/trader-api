@@ -53,7 +53,7 @@ def teste_model(data_test = read_data.read_dataset("datasets/WINM20_1min.csv"), 
         prev_fec = modelos[3].predict(x_teste)
         
         prev_var = abs(float(prev_fec) - float(prev_abe))
-        prev_gap = abs(float(abertura_teste) - float(x_teste['Fechamento']))
+        prev_gap = abs(float(fechamento_teste) - float(prev_abe))
         if(prev_abe.astype(float) <= prev_fec): # se o candle predito for positivo (branco) 
             # efetua uma ordem de venda
             ordem_compra_teste = False
