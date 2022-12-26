@@ -42,10 +42,8 @@ def teste_model(data_test = read_data.read_dataset("datasets/WINM20_1min.csv"), 
     
     for i in range(1, len(data_test)-1):
         x_teste = data_test[features_entrada].iloc[i-1:i]
-        abertura_teste = data_test['Abertura'].iloc[i:i+1]
         minimo_teste = data_test['Mínimo'].iloc[i:i+1]
         maximo_teste = data_test['Máximo'].iloc[i:i+1]
-        fechamento_teste = data_test['Fechamento'].iloc[i:i+1]
         
         prev_abe = modelos[0].predict(x_teste)
         prev_min = modelos[1].predict(x_teste)
@@ -53,7 +51,7 @@ def teste_model(data_test = read_data.read_dataset("datasets/WINM20_1min.csv"), 
         prev_fec = modelos[3].predict(x_teste)
         
         prev_var = abs(float(prev_fec) - float(prev_abe))
-        prev_gap = abs(float(fechamento_teste) - float(prev_abe))
+        prev_gap = abs(float(x_teste['Fechamento']) - float(prev_abe))
         if(prev_abe.astype(float) <= prev_fec): # se o candle predito for positivo (branco) 
             # efetua uma ordem de venda
             ordem_compra_teste = False
