@@ -7,11 +7,12 @@ def teste_model(data_test = rd.read_dataset("datasets/WINM20_1min.csv"), banca =
     data_test = data_test[len(data_test)-480:len(data_test)]
     modelos = tm.train_models(data_test)
     
+    # Configurações
+    erro_ordem_teste = 100 # pontos # com o valor 115, tem-se um acerto de 78%
+    
     limite_stop = 100
     limite_gain = 50
     
-    valor_contrato = 1 # reais
-    erro_ordem_teste = 120 # pontos # com o valor 115, tem-se um acerto de 78%
     #
     gap_minimo = 0 # pontos # com o valor 29, tem-se um acerto de 78%
     gap_maximo = 100 # pontos # com o valor 100, tem-se um acerto de 91%
@@ -20,6 +21,7 @@ def teste_model(data_test = rd.read_dataset("datasets/WINM20_1min.csv"), banca =
     var_maximo = 2000 # pontos # com o valor 2.1, tem-se um acerto de 80% 
 
     #
+    valor_contrato = 1 # reais
     qnt_operacoes = 0
     qnt_ganhos = 0
     qnt_perdas = 0

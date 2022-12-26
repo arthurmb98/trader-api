@@ -9,9 +9,8 @@ modelos = tm.train_models(rd.read_dataset())
 app = FastAPI()
 
 # Configurações
-
 limiar_gap = 10 # gap_maximo = 10 # pontos
-erro_ordem = 120 # pontos
+erro_ordem = 100 # pontos 
 
 @app.get("/")
 def root():
