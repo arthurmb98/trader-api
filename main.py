@@ -42,10 +42,10 @@ def get_future_candle():
     print()
     
     json = {
-        "Fechamento:": str(fechamento_ultimo),
         "Tipo de Ordem": "NÃO Efetuar ordem!",
         "Valor da Ordem": 0,
-        "Candle Futuro": df
+        "Candle Futuro": df,
+        "Fechamento passado:": str(fechamento_ultimo)
     }
     
     predicao_var = (predicao_abertura - predicao_fechamento).astype(float)
