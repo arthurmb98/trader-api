@@ -14,7 +14,12 @@ erro_ordem = 100 # pontos
 
 @app.get("/")
 def root():
-    return "Daytrade 1min candle predict api."
+    return {"api": "Daytrade 1min candle predict.",
+            "version": "1.0",
+            "Linguagem": "Python 3",
+            "Engenheiro de software": "Arthur Barbosa.",
+            "Mensagem": "Bora ficar rico porra! Derrubar arvore e o krl biiiirrrrl."
+            }
 
 @app.get("/teste")
 def teste_dataset():
