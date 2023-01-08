@@ -55,7 +55,7 @@ def get_future_candle():
         "Tipo de Ordem": "NÃO Efetuar ordem!",
         "Valor da Ordem": 0,
         "Candle Futuro": df,
-        "Fechamento passado:": str(fechamento_ultimo)
+        "Candle Passado": df_ultimo,
         #"Predicao Ordem:": str(predicao_ordem)
     }
     

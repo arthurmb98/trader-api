@@ -23,8 +23,8 @@ def read_ultimo_candle(ativo = "WIN$"):
     #copy_rates_from_pos(symbol, timeframe, start_pos, count)
     valor = mt5.copy_rates_from_pos(ativo, mt5.TIMEFRAME_M1, 1, 1) # candle anterior
     df_ultimo = pd.DataFrame({'Abertura': [valor[0][1]],
-                          'Mínimo': [valor[0][2]], 
-                          'Máximo': [valor[0][3]],
+                          'Máximo': [valor[0][2]], 
+                          'Mínimo': [valor[0][3]],
                           'Fechamento': [valor[0][4]]})
     return df_ultimo
 
