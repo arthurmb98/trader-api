@@ -1,6 +1,7 @@
 import pandas as pd
 import read_data as rd
 import train_models as tm
+import train_ordem
 import testes as t
 from fastapi import FastAPI
 
@@ -35,10 +36,14 @@ def get_future_candle():
     predicao_maximo = modelos[2].predict(df_ultimo)
     predicao_fechamento = modelos[3].predict(df_ultimo)
     
+    
+    
     df = pd.DataFrame(data={'Abertura': [str(predicao_abertura)],'Mínimo': [str(predicao_minimo)], 'Máximo': [str(predicao_maximo)], 'Fechamento': [str(predicao_fechamento)]})
 
     # Ultimo valor real
     fechamento_ultimo = df_ultimo['Fechamento'][0].astype(float)
+    
+    #predicao_ordem = modelo_ordem.predict(df_ultimo['Fechamento'][0])
     
     print()
     print("Fechamento atual: ", fechamento_ultimo)
@@ -51,6 +56,7 @@ def get_future_candle():
         "Valor da Ordem": 0,
         "Candle Futuro": df,
         "Fechamento passado:": str(fechamento_ultimo)
+        #"Predicao Ordem:": str(predicao_ordem)
     }
     
     predicao_var = (predicao_abertura - predicao_fechamento).astype(float)

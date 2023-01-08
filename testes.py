@@ -2,9 +2,9 @@ import read_data as rd
 import train_models as tm
 
 
-def teste_model(data_test = rd.read_dataset("datasets/WINM20_1min.csv"), banca = 100, qnt_contratos = 1):
+def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca = 100, qnt_contratos = 1):
     
-    data_test = data_test[len(data_test)-480:len(data_test)]
+    data_test = data_test[len(data_test)-480:len(data_test)] # 480 = um dia
     modelos = tm.train_models(data_test, False)
     
     # Configurações
