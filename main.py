@@ -43,6 +43,7 @@ def get_future_candle():
     # Ultimo valor real
     fechamento_ultimo = df_ultimo['Fechamento'][0].astype(float)
     
+    #modelo_ordem = train_ordem.fit_model_ordem(rd.read_dataset()) 
     #predicao_ordem = modelo_ordem.predict(df_ultimo['Fechamento'][0])
     
     print()
@@ -56,7 +57,7 @@ def get_future_candle():
         "Valor da Ordem": 0,
         "Candle Futuro": df,
         "Candle Passado": df_ultimo,
-        #"Predicao Ordem:": str(predicao_ordem)
+       # "Predicao Ordem:": str(predicao_ordem)
     }
     
     predicao_var = (predicao_abertura - predicao_fechamento).astype(float)

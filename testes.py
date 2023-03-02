@@ -2,10 +2,9 @@ import read_data as rd
 import train_models as tm
 
 
-def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca = 100, qnt_contratos = 1):
+def teste_model(data_test = rd.read_dataset(), banca = 100, qnt_contratos = 1):
     
-    data_test = data_test[len(data_test)-480:len(data_test)] # 480 = um dia
-    modelos = tm.train_models(data_test, False)
+    modelos = tm.train_models(data_test)
     
     # Configurações
     erro_ordem_teste = 100 # pontos # com o valor 115, tem-se um acerto de 78%
@@ -14,11 +13,7 @@ def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca =
     limite_gain = 50
     
     #
-    gap_minimo = 0 # pontos # com o valor 29, tem-se um acerto de 78%
-    gap_maximo = 100 # pontos # com o valor 100, tem-se um acerto de 91%
-
-    var_minima = 0 # pontos # com o valor 1.2, tem-se um acerto de 81%
-    var_maximo = 2000 # pontos # com o valor 2.1, tem-se um acerto de 80% 
+    gap_maximo = 10 # pontos # com o valor 100, tem-se um acerto de 91%
 
     #
     valor_contrato = 1 # reais
@@ -52,17 +47,16 @@ def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca =
         prev_fec = modelos[3].predict(x_teste)
         
         prev_var = abs(float(prev_fec) - float(prev_abe))
+        prev_variacao = float(prev_fec) - float(prev_abe)
         prev_gap = abs(float(x_teste['Fechamento']) - float(prev_abe))
-        if(prev_abe.astype(float) <= prev_fec): # se o candle predito for positivo (branco) 
+        if(prev_variacao >= 0): # se o candle predito for positivo (branco) 
             # efetua uma ordem de venda
             ordem_compra_teste = False
-            qnt_vendas = qnt_vendas + 1
             ordem_teste = prev_min + erro_ordem_teste
         else: # se o candle for negativo (preto)
             # efetua uma ordem de compra
             ordem_compra_teste = True
             ordem_teste = prev_max - erro_ordem_teste 
-            qnt_compras = qnt_compras + 1
             
         if(ordem_compra_teste):
             stop_ordem = ordem_teste - limite_stop
@@ -71,15 +65,17 @@ def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca =
             stop_ordem = ordem_teste + limite_stop
             gain_ordem = ordem_teste - limite_gain       
         
-        if(var_minima <= prev_var and var_maximo >= prev_var and prev_gap >= gap_minimo and prev_gap <= gap_maximo and ganho >= limite_stop/5): # caso a minha banca não tenha zerado, continua        
+        if(prev_gap <= gap_maximo and ganho >= limite_stop/5): # caso a minha banca não tenha zerado, continua        
             if(ordem_compra_teste):
                 if(minimo_teste.to_numpy()[0] <= ordem_teste): # se entrar na ordem compra
                     if(ordem_execucao == False):
+                        qnt_compras = qnt_compras + 1
                         qnt_operacoes = qnt_operacoes + 1
                         ordem_execucao = True
             else:
                 if(maximo_teste.to_numpy()[0] >= ordem_teste): # se entrar na ordem venda
                     if(ordem_execucao == False):
+                        qnt_vendas = qnt_vendas + 1
                         qnt_operacoes = qnt_operacoes + 1
                         ordem_execucao = True
                 
@@ -145,6 +141,8 @@ def teste_model(data_test = rd.read_dataset("datasets/WINFUT_1min.csv"), banca =
         "Total de candles": len(data_test),
         "Total de operações:": qnt_operacoes,
         "Operações por candles(%):": 100*qnt_operacoes/len(data_test),
+        "Quantidade de compras:": qnt_compras,
+        "Quantidade de vendas:": qnt_vendas,
         "Quantidade de ganhos:": qnt_ganhos,
         "Quantidade de perdas:": qnt_perdas,
         "Média da variação das ganhos:": media_var_ganho,
