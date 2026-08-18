@@ -432,16 +432,21 @@ export function StudyPage() {
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
         <p>Sinal WIN · estudo educacional · não é recomendação de investimento</p>
-        <p className="mt-2">
-          Desenvolvido por{' '}
-          <a
-            href="https://github.com/arthurmb98/koletivo-hub"
-            target="_blank"
-            rel="noreferrer"
-            className="font-display font-semibold text-foreground hover:text-primary"
-          >
-            Koletivo Hub
-          </a>
+        <a
+          href="https://koletivo-hub.vercel.app"
+          target="_blank"
+          rel="noreferrer"
+          className="mt-5 inline-flex flex-col items-center gap-3 text-foreground hover:text-primary"
+        >
+          <img
+            src="/brand/logo-branco.png"
+            alt="Koletivo Hub"
+            className="h-10 w-auto object-contain"
+          />
+          <span className="font-display text-sm font-semibold">Desenvolvido por Koletivo Hub</span>
+        </a>
+        <p className="mt-3 text-xs text-muted-foreground/70">
+          © {new Date().getFullYear()}. Todos os direitos reservados a Koletivo Hub.
         </p>
       </footer>
     </div>

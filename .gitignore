@@ -8,3 +8,4 @@ web/dist/
 *.joblib
 .pytest_cache/
 .mypy_cache/
+.vercel
