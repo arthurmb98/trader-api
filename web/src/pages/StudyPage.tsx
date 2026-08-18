@@ -431,7 +431,18 @@ export function StudyPage() {
       </section>
 
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        Sinal WIN · estudo educacional · não é recomendação de investimento
+        <p>Sinal WIN · estudo educacional · não é recomendação de investimento</p>
+        <p className="mt-2">
+          Desenvolvido por{' '}
+          <a
+            href="https://github.com/arthurmb98/koletivo-hub"
+            target="_blank"
+            rel="noreferrer"
+            className="font-display font-semibold text-foreground hover:text-primary"
+          >
+            Koletivo Hub
+          </a>
+        </p>
       </footer>
     </div>
   )
