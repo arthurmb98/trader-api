@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pandas as pd
+
+from trader.config import AppConfig
+from trader.domain import Side, Signal, PredictedCandle
+from trader.ml import CandleRegressor, add_candle_features, add_true_range
+from trader.risk import RiskCalculator
+
+
+class SignalPolicy:
+    """Turns a frozen regressor + last closed candles into a buy/sell/flat signal."""
+
+    def __init__(self, config: AppConfig, predictor: CandleRegressor) -> None:
+        if not predictor.is_fitted:
+            raise RuntimeError("SignalPolicy exige modelo já treinado.")
+        self.config = config
+        self.predictor = predictor
+        self.risk = RiskCalculator(config)
+
+    def from_candles(self, frame: pd.DataFrame) -> Signal:
+        if frame.empty:
+            return Signal(Side.FLAT, 0, 0, 0, "sem_candles")
+        featured = add_true_range(add_candle_features(frame), self.config.risk.atr_period)
+        predicted = self.predictor.predict_next_ohlc(featured)
+        last = featured.iloc[-1]
+        pred = predicted.iloc[-1]
+        pred_c = PredictedCandle(
+            open=float(pred["pred_open"]),
+            high=float(pred["pred_high"]),
+            low=float(pred["pred_low"]),
+            close=float(pred["pred_close"]),
+        )
+        flt = self.config.filters
+        gap = abs(pred_c.open - float(last["Fechamento"]))
+        if flt.max_gap_points is not None and gap > flt.max_gap_points:
+            return Signal(Side.FLAT, 0, 0, 0, "gap_acima_do_limite", pred_c)
+        if pred_c.range < flt.min_predicted_range:
+            return Signal(Side.FLAT, 0, 0, 0, "range_previsto_curto", pred_c)
+        if pred_c.body < flt.min_predicted_body:
+            return Signal(Side.FLAT, 0, 0, 0, "corpo_previsto_curto", pred_c)
+
+        side = Side.BUY if pred_c.close >= float(last["Fechamento"]) else Side.SELL
+        if self.config.execution.direction == "fade":
+            side = side.opposite()
+        entry = float(last["Fechamento"])
+        atr = float(last["atr"]) if pd.notna(last.get("atr")) else None
+        stop, take = self.risk.levels(side, entry, atr)
+        return Signal(
+            side=side,
+            entry=entry,
+            stop=stop,
+            take=take,
+            reason="seguir_previsao" if self.config.execution.direction == "follow" else "fade",
+            predicted=pred_c,
+        )
+
+
+def overlay_config(base: AppConfig, **patches: object) -> AppConfig:
+    data = deepcopy(base.to_dict())
+    for key, value in patches.items():
+        section, _, name = key.partition("__")
+        if not name:
+            data[key] = value
+        else:
+            data.setdefault(section, {})
+            data[section][name] = value
+    return AppConfig.from_dict(data)

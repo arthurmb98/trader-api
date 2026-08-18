@@ -1,0 +1,74 @@
+@import "tailwindcss" source(none);
+@source "../**/*.{js,ts,jsx,tsx,html}";
+@source "../../index.html";
+
+@font-face {
+  font-family: "Syne";
+  src: url("/fonts/Syne.ttf") format("truetype");
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Outfit";
+  src: url("/fonts/Outfit.ttf") format("truetype");
+  font-weight: 300 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --color-background: #0a0a0c;
+  --color-elevated: #1c1c1e;
+  --color-card: #2c2c2e;
+  --color-primary: #058ef2;
+  --color-primary-hover: #0470c4;
+  --color-violet: #9f2db3;
+  --color-pink: #f2309b;
+  --color-foreground: #f5f5f7;
+  --color-muted-foreground: #a1a1aa;
+  --color-border: #3a3a3c;
+  --color-gain: #34d399;
+  --color-loss: #fb7185;
+
+  --font-display: "Syne", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+
+  --animate-fade-up: fade-up 0.7s ease-out both;
+  --animate-fade-in: fade-in 0.6s ease-out both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply m-0 min-h-dvh bg-background font-sans text-foreground antialiased;
+  }
+}
