@@ -22,7 +22,7 @@ risk:
   trailing_enabled: false
   trailing_trigger_points: 80
   trailing_distance_points: 50
-  daily_loss_points: 0.0
+  daily_loss_points: 150.0
   max_trades_per_day: 8
 filters:
   session_start: 09:15
@@ -35,7 +35,7 @@ filters:
   max_gap_points: 15.0
   min_predicted_body: 0.0
 execution:
-  direction: follow
+  direction: fade
   entry_mode: limit_inside
   entry_offset_points: 120.0
 mt5:

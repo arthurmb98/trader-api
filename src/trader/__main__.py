@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-import uvicorn
-
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Trader API — estudo e sinais WIN")
@@ -12,6 +10,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("prepare-data", help="Converte WIN$D MT5 em treino (até 2024) e teste (2025–hoje)")
     sub.add_parser("study", help="Treina no CSV A, testa no CSV B, varre parâmetros")
     sub.add_parser("enrich", help="Agrega períodos e simula contratos compostos nos vencedores")
+    sub.add_parser("rerank", help="Reescolhe vencedores com piso de DD < banca e gera o parecer")
     serve = sub.add_parser("serve", help="Sobe a API FastAPI")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -32,7 +31,14 @@ def main(argv: list[str] | None = None) -> None:
 
         enrich_saved_study()
         return
+    if args.cmd == "rerank":
+        from trader.study import rerank_saved_study
+
+        rerank_saved_study()
+        return
     if args.cmd == "serve":
+        import uvicorn
+
         uvicorn.run("trader.api:app", host=args.host, port=args.port, reload=False)
         return
     parser.print_help()

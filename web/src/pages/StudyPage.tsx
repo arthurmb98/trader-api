@@ -14,7 +14,7 @@ import {
 import { Activity, AlertTriangle, CheckCircle2, Cpu, LineChart, Shield } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { brl, cn, num, pct } from '@/lib/utils'
-import type { BankKey, PeriodRow, StudyFile, Winner } from '@/lib/types'
+import type { BankKey, CrossBankSetup, Parecer, PeriodRow, StudyFile, Winner } from '@/lib/types'
 
 function stopGainLabel(winner: Winner) {
   const risk = winner.params.risk
@@ -217,6 +217,156 @@ function ParamGrid({ winner }: { winner: Winner }) {
   )
 }
 
+function CrossBankTable({ setups }: { setups: CrossBankSetup[] }) {
+  return (
+    <div className="space-y-6">
+      {setups.map((setup) => (
+        <div key={setup.id} className="overflow-x-auto rounded-2xl border border-border bg-elevated/40 p-4">
+          <p className="font-display font-semibold">
+            {setup.timeframe === 'm1' ? '1 minuto' : '5 minutos'} · {setup.label}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{setup.note}</p>
+          <table className="mt-4 w-full min-w-[640px] text-left text-sm">
+            <thead className="text-xs uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="pb-2 font-medium">Banca</th>
+                <th className="pb-2 font-medium">P&L 1 contrato</th>
+                <th className="pb-2 font-medium">Tombo</th>
+                <th className="pb-2 font-medium">P&L composto</th>
+                <th className="pb-2 font-medium">Máx. contratos</th>
+              </tr>
+            </thead>
+            <tbody>
+              {['500', '1000', '5000'].map((key) => {
+                const side = setup.by_bank[key]
+                if (!side) return null
+                const compound = side.compound
+                return (
+                  <tr key={key} className="border-t border-border/70">
+                    <td className="py-2 font-medium">{brl(Number(key))}</td>
+                    <td className={side.metrics.net_pnl >= 0 ? 'text-gain' : 'text-loss'}>
+                      {brl(side.metrics.net_pnl)}
+                    </td>
+                    <td>
+                      {brl(side.metrics.max_drawdown)}{' '}
+                      <span className="text-muted-foreground">({pct(side.metrics.max_drawdown_pct)})</span>
+                    </td>
+                    <td className={compound && compound.metrics.net_pnl >= 0 ? 'text-gain' : 'text-loss'}>
+                      {compound ? brl(compound.metrics.net_pnl) : '—'}
+                    </td>
+                    <td>{compound?.max_contracts ?? side.max_contracts ?? 1}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ParecerSection({ parecer, crossBank }: { parecer: Parecer; crossBank: CrossBankSetup[] }) {
+  const banks = [...new Set(parecer.monthly.map((row) => row.bank))]
+  return (
+    <section id="parecer" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
+      <p className="text-sm uppercase tracking-[0.2em] text-primary">Parecer</p>
+      <h2 className="mt-2 font-display text-3xl font-bold">{parecer.headline}</h2>
+      <p className="mt-3 max-w-3xl text-muted-foreground">
+        Acerto de direção do ML: {pct(parecer.ml_hit.m1)} em 1 min e {pct(parecer.ml_hit.m5)} em 5 min — pouco melhor
+        que cara ou coroa. Custo de R$ 1 por operação já está no P&L. {parecer.dd_floor}
+      </p>
+
+      <h3 className="mt-8 font-display text-2xl font-bold">Por que R$ 5.000 parece pior</h3>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {parecer.why_5k.map((item) => (
+          <div key={item.title} className="rounded-2xl border border-border bg-elevated/50 p-5">
+            <h4 className="font-display font-semibold">{item.title}</h4>
+            <p className="mt-2 text-sm text-foreground/90">{item.body}</p>
+          </div>
+        ))}
+      </div>
+
+      <h3 className="mt-10 font-display text-2xl font-bold">Ganho médio mensal</h3>
+      <p className="mt-2 text-sm text-muted-foreground">{parecer.n_months_note}</p>
+      <div className="mt-4 space-y-6">
+        {banks.map((bank) => {
+          const rows = parecer.monthly.filter((row) => row.bank === bank)
+          return (
+            <div key={bank} className="overflow-x-auto rounded-2xl border border-border bg-elevated/40 p-4">
+              <p className="font-display font-semibold">Banca {brl(bank)}</p>
+              <table className="mt-3 w-full min-w-[720px] text-left text-sm">
+                <thead className="text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="pb-2 font-medium">Setup</th>
+                    <th className="pb-2 font-medium">1 contrato / mês</th>
+                    <th className="pb-2 font-medium">Composto / mês</th>
+                    <th className="pb-2 font-medium">Tombo 1c</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.name} className="border-t border-border/70">
+                      <td className="py-2">
+                        <p className="font-medium">{row.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {row.timeframe === 'm1' ? '1 min' : '5 min'} · {row.label}
+                          {row.note ? ` · ${row.note}` : ''}
+                        </p>
+                      </td>
+                      <td className={row.avg_1c >= 0 ? 'text-gain' : 'text-loss'}>{brl(row.avg_1c)}</td>
+                      <td className={row.avg_compound >= 0 ? 'text-gain' : 'text-loss'}>
+                        {brl(row.avg_compound)}
+                        <span className="ml-1 text-xs text-muted-foreground">até {row.max_contracts}c</span>
+                      </td>
+                      <td>
+                        {brl(row.dd_abs_1c)}{' '}
+                        <span className="text-muted-foreground">({pct(row.dd_pct_1c)})</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        })}
+      </div>
+
+      {crossBank.length ? (
+        <>
+          <h3 className="mt-10 font-display text-2xl font-bold">A mesma config nas 3 bancas</h3>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            Nº 1 de 1 min e de 5 min da banca R$ 1.000, reaplicados em R$ 500, R$ 1.000 e R$ 5.000 sem mudar stop,
+            alvo ou stop diário.
+          </p>
+          <div className="mt-4">
+            <CrossBankTable setups={crossBank} />
+          </div>
+        </>
+      ) : null}
+
+      <div className="mt-10 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
+          <h3 className="font-display font-semibold">O que o estudo diz</h3>
+          <ul className="mt-3 space-y-2 text-sm text-foreground/90">
+            {parecer.strategy.map((item) => (
+              <li key={item}>· {item}</li>
+            ))}
+          </ul>
+        </div>
+        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
+          <h3 className="font-display font-semibold">Melhorias simples</h3>
+          <ul className="mt-3 space-y-2 text-sm text-foreground/90">
+            {parecer.improvements.map((item) => (
+              <li key={item}>· {item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 export function StudyPage() {
   const [data, setData] = useState<StudyFile | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -245,7 +395,8 @@ export function StudyPage() {
     void load()
   }, [])
 
-  const winner = data?.winners[bank]?.[pick.tf]?.[pick.i]
+  const tfList = data?.winners[bank]?.[pick.tf] ?? []
+  const winner = tfList[Math.min(pick.i, Math.max(tfList.length - 1, 0))]
   const side = compound && winner?.compound ? winner.compound : winner
   const hourly = useMemo(() => {
     if (!side) return []
@@ -286,6 +437,9 @@ export function StudyPage() {
       <header className="relative mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8">
         <p className="font-display text-lg font-bold">Sinal WIN</p>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => document.getElementById('parecer')?.scrollIntoView()}>
+            Parecer
+          </Button>
           <Button variant="outline" size="sm" onClick={() => document.getElementById('setups')?.scrollIntoView()}>
             Ver setups
           </Button>
@@ -302,7 +456,8 @@ export function StudyPage() {
         </h1>
         <p className="mt-5 max-w-2xl animate-fade-up text-lg text-muted-foreground [animation-delay:140ms]">
           Mini índice WIN$ contínuo. Ranking oficial com 1 contrato. Treino de ago/2021 a dez/2024. Teste de jan/2025 a ago/2026.
-          O modelo nunca vê os candles do teste. Três bancas — duas melhores de 1 min e duas de 5 min em cada uma. Há uma simulação extra que dobra contratos quando a banca dobra.
+          O modelo nunca vê os candles do teste. Três bancas — até duas melhores de 1 min e duas de 5 min em cada uma.
+          Setup com tombo maior ou igual à banca sai do ranking. Há uma simulação extra que dobra contratos quando a banca dobra.
         </p>
         <div className="mt-8 grid gap-3 sm:grid-cols-3">
           <div className="rounded-2xl border border-border bg-elevated/60 p-4">
@@ -345,6 +500,8 @@ export function StudyPage() {
           contrato. Banca simulada selecionada: {brl(m.initial_bank)}.
         </p>
       </section>
+
+      {data.parecer ? <ParecerSection parecer={data.parecer} crossBank={data.cross_bank ?? []} /> : null}
 
       <section id="setups" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
         <h2 className="font-display text-3xl font-bold">As melhores estratégias por banca</h2>

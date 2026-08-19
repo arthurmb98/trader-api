@@ -123,11 +123,56 @@ export type StudyBlock = {
 
 export type BankKey = '500' | '1000' | '5000'
 
+export type ParecerWhy = { title: string; body: string }
+
+export type ParecerMonthly = {
+  bank: number
+  name: string
+  timeframe: string
+  label: string
+  avg_1c: number
+  avg_compound: number
+  dd_pct_1c: number
+  dd_abs_1c: number
+  net_pnl_1c: number
+  net_pnl_compound: number
+  max_contracts: number
+  n_months: number
+  note: string
+}
+
+export type Parecer = {
+  headline: string
+  ml_hit: { m1: number; m5: number }
+  n_months_note: string
+  why_5k: ParecerWhy[]
+  monthly: ParecerMonthly[]
+  strategy: string[]
+  improvements: string[]
+  dd_floor: string
+}
+
+export type CrossBankSetup = {
+  id: string
+  timeframe: string
+  label: string
+  source_name: string
+  note: string
+  params: {
+    risk: Record<string, number | string | boolean>
+    filters: Record<string, number | string | boolean | null>
+    execution: Record<string, number | string | boolean>
+  }
+  by_bank: Record<string, RunSide & { compound?: RunSide }>
+}
+
 export type StudyFile = {
   generated_at: string
   disclaimer: string
   how_it_works: string[]
   insights: { worked: string[]; failed: string[]; improve: string[] }
+  parecer?: Parecer
+  cross_bank?: CrossBankSetup[]
   frozen_configs: string[]
   mt5: { ready: boolean; default_enabled: boolean; steps: string[] }
   instrument: { name: string; point_value: number; tick: number; contracts?: number }
