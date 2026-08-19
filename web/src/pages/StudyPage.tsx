@@ -55,7 +55,37 @@ function setupLabel(winner: Winner) {
   const tf = winner.params.data.timeframe === 'm5' ? '5 min' : '1 min'
   const dir = exe.direction === 'fade' ? 'contra a previsão' : 'seguir'
   const trail = risk.trailing_enabled ? ' · trailing' : ''
-  return `${tf} · ${dir} · ${risk.stop_points}/${risk.gain_points}${trail}`
+  return `${tf} · ${dir}${trail}`
+}
+
+function stopGainOf(winner: Winner) {
+  return {
+    stop: Number(winner.params.risk.stop_points),
+    gain: Number(winner.params.risk.gain_points),
+  }
+}
+
+function stopGainFromLabel(label: string | null | undefined) {
+  const match = label?.match(/(\d+)\s*\/\s*(\d+)/)
+  if (!match) return null
+  return { stop: Number(match[1]), gain: Number(match[2]) }
+}
+
+function StopGainMark({
+  stop,
+  gain,
+  className,
+}: {
+  stop: number
+  gain: number
+  className?: string
+}) {
+  if (!Number.isFinite(stop) || !Number.isFinite(gain)) return null
+  return (
+    <p className={cn('text-[10px] tabular-nums tracking-wide text-muted-foreground/55', className)}>
+      stop {stop} · gain {gain}
+    </p>
+  )
 }
 
 function avgMonth(side: RunSide | Winner | undefined) {
@@ -161,16 +191,18 @@ function WinnerCard({
   const fixed = lotSide(winner, false)
   const scaled = lotSide(winner, true)
   const monthly = avgMonth(fixed)
+  const { stop, gain } = stopGainOf(winner)
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-2xl border p-5 text-left transition-colors',
+        'relative rounded-2xl border p-5 text-left transition-colors',
         active ? 'border-primary bg-card' : 'border-border bg-elevated/50 hover:bg-card/80',
       )}
     >
-      <p className="text-sm text-muted-foreground">
+      <StopGainMark stop={stop} gain={gain} className="absolute right-4 top-4" />
+      <p className="pr-28 text-sm text-muted-foreground">
         {title}
         {monthly < 0 ? ' · prejuízo no teste' : ''}
       </p>
@@ -259,14 +291,16 @@ function CaseCompare({
                   <div className="mt-3 grid gap-2">
                     {TIMEFRAMES.map((tf) => {
                       const row = rows.find((item) => item.case === key && String(item.bank) === bank && tfOf(item) === tf.key)
+                      const sg = stopGainFromLabel(row?.label)
                       return (
                         <button
                           key={tf.key}
                           type="button"
                           onClick={() => onPick(key, bank, tf.key)}
-                          className="rounded-lg border border-border/60 bg-background/40 p-2 text-left transition-colors hover:border-primary"
+                          className="relative rounded-lg border border-border/60 bg-background/40 p-2 text-left transition-colors hover:border-primary"
                         >
-                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{tf.label}</p>
+                          {sg ? <StopGainMark stop={sg.stop} gain={sg.gain} className="absolute right-2 top-2" /> : null}
+                          <p className="pr-24 text-[11px] uppercase tracking-wide text-muted-foreground">{tf.label}</p>
                           {row?.avg_fixed == null ? (
                             <p className="mt-1 text-xs text-muted-foreground">Sem setup neste recorte.</p>
                           ) : (
