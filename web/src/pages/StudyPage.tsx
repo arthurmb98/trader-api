@@ -30,10 +30,6 @@ const SIGNAL_CASES: { key: CaseKey; label: string; help: string }[] = [
 ]
 const CASE_HELP = Object.fromEntries(SIGNAL_CASES.map((c) => [c.key, c.help])) as Record<CaseKey, string>
 const CASE_LABELS = Object.fromEntries(SIGNAL_CASES.map((c) => [c.key, c.label])) as Record<CaseKey, string>
-const TIMEFRAMES: { key: TfKey; label: string }[] = [
-  { key: 'm1', label: '1 min' },
-  { key: 'm5', label: '5 min' },
-]
 const BANKS: BankKey[] = ['500', '1000']
 
 function listWinners(data: StudyFile | null, caseKey: CaseKey, bank: BankKey, tf: TfKey): Winner[] {
@@ -275,9 +271,9 @@ function CaseCompare({
       <p className="text-sm uppercase tracking-[0.2em] text-primary">Comparar</p>
       <h2 className="mt-2 font-display text-3xl font-bold">{parecer.headline}</h2>
       <p className="mt-3 max-w-3xl text-muted-foreground">
-        Número grande = ganho médio mensal do melhor setup de cada caso, banca e tempo gráfico.{' '}
+        Número grande = ganho médio mensal do melhor setup de cada caso e banca.{' '}
         {parecer.n_months_note} Acerto do ML: {pct(parecer.ml_hit.m1)} no 1 min ({lookback.m1} candles de contexto na
-        guarda) e {pct(parecer.ml_hit.m5)} no 5 min ({lookback.m5} candles). {parecer.dd_floor}
+        guarda). {parecer.dd_floor}
       </p>
       <div className="mt-8 grid gap-4 lg:grid-cols-2">
         {caseList.map((key) => (
@@ -285,50 +281,45 @@ function CaseCompare({
             <p className="font-display text-xl font-semibold">{CASE_LABELS[key] ?? caseLabels[key] ?? key}</p>
             <p className="mt-2 text-sm text-muted-foreground">{CASE_HELP[key]}</p>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              {BANKS.map((bank) => (
-                <div key={`${key}-${bank}`} className="rounded-xl border border-border/70 bg-card/40 p-3">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">{brl(Number(bank))}</p>
-                  <div className="mt-3 grid gap-2">
-                    {TIMEFRAMES.map((tf) => {
-                      const row = rows.find((item) => item.case === key && String(item.bank) === bank && tfOf(item) === tf.key)
-                      const sg = stopGainFromLabel(row?.label)
-                      return (
-                        <button
-                          key={tf.key}
-                          type="button"
-                          onClick={() => onPick(key, bank, tf.key)}
-                          className="relative rounded-lg border border-border/60 bg-background/40 p-2 text-left transition-colors hover:border-primary"
-                        >
-                          {sg ? <StopGainMark stop={sg.stop} gain={sg.gain} className="absolute right-2 top-2" /> : null}
-                          <p className="pr-24 text-[11px] uppercase tracking-wide text-muted-foreground">{tf.label}</p>
-                          {row?.avg_fixed == null ? (
-                            <p className="mt-1 text-xs text-muted-foreground">Sem setup neste recorte.</p>
-                          ) : (
-                            <>
-                              <p className={cn('mt-1 font-display text-xl font-bold', row.avg_fixed >= 0 ? 'text-gain' : 'text-loss')}>
-                                {brl(row.avg_fixed)}
-                              </p>
-                              <p className="text-[11px] text-muted-foreground">1 mini / mês</p>
-                              <p className={cn('mt-1 text-xs font-medium', (row.avg_scaled ?? 0) >= 0 ? 'text-gain' : 'text-loss')}>
-                                {brl(row.avg_scaled ?? 0)}{' '}
-                                <span className="font-normal text-muted-foreground">lote que sobe</span>
-                              </p>
-                            </>
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
+              {BANKS.map((bank) => {
+                const row = rows.find((item) => item.case === key && String(item.bank) === bank && tfOf(item) === 'm1')
+                const sg = stopGainFromLabel(row?.label)
+                return (
+                  <button
+                    key={`${key}-${bank}`}
+                    type="button"
+                    onClick={() => onPick(key, bank, 'm1')}
+                    className="relative rounded-xl border border-border/70 bg-card/40 p-3 text-left transition-colors hover:border-primary"
+                  >
+                    {sg ? <StopGainMark stop={sg.stop} gain={sg.gain} className="absolute right-3 top-3" /> : null}
+                    <p className="pr-24 text-xs uppercase tracking-wide text-muted-foreground">{brl(Number(bank))}</p>
+                    {row?.avg_fixed == null ? (
+                      <p className="mt-2 text-sm text-muted-foreground">Sem setup neste recorte.</p>
+                    ) : (
+                      <>
+                        <p className={cn('mt-2 font-display text-2xl font-bold', row.avg_fixed >= 0 ? 'text-gain' : 'text-loss')}>
+                          {brl(row.avg_fixed)}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">1 mini / mês</p>
+                        <p className={cn('mt-1 text-xs font-medium', (row.avg_scaled ?? 0) >= 0 ? 'text-gain' : 'text-loss')}>
+                          {brl(row.avg_scaled ?? 0)}{' '}
+                          <span className="font-normal text-muted-foreground">lote que sobe</span>
+                        </p>
+                      </>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           </div>
         ))}
       </div>
       <ul className="mt-8 space-y-2 text-sm text-foreground/90">
-        {parecer.strategy.map((item) => (
-          <li key={item}>· {item}</li>
-        ))}
+        {parecer.strategy
+          .filter((item) => !/5 min/.test(item))
+          .map((item) => (
+            <li key={item}>· {item}</li>
+          ))}
       </ul>
     </section>
   )
@@ -339,7 +330,7 @@ export function StudyPage() {
   const [error, setError] = useState<string | null>(null)
   const [caseKey, setCaseKey] = useState<CaseKey>('last_candle')
   const [bank, setBank] = useState<BankKey>('1000')
-  const [tf, setTf] = useState<TfKey>('m5')
+  const [tf, setTf] = useState<TfKey>('m1')
   const [pick, setPick] = useState(0)
   const [chartScaled, setChartScaled] = useState(false)
   const [showIntra, setShowIntra] = useState(false)
@@ -364,7 +355,7 @@ export function StudyPage() {
           setCaseKey('last_candle')
           const firstBank = String(json.banks?.[1] ?? json.banks?.[0] ?? 1000) as BankKey
           setBank(firstBank)
-          setTf('m5')
+          setTf('m1')
           setChartScaled(false)
           return
         } catch {
@@ -455,17 +446,15 @@ export function StudyPage() {
               <p className="font-display text-lg font-semibold">{item.label}</p>
               <p className="mt-2 text-sm text-muted-foreground">{item.help}</p>
               {item.key === 'last_candles' ? (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Janela da guarda: {lookback.m1} candles no 1 min, {lookback.m5} no 5 min.
-                </p>
+                <p className="mt-3 text-xs text-muted-foreground">Janela da guarda: {lookback.m1} candles no 1 min.</p>
               ) : null}
             </div>
           ))}
         </div>
         <p className="mt-6 text-sm text-muted-foreground">
-          Banca de R$ 500 ou R$ 1.000. Tempo gráfico de 1 min ou 5 min, cada um com os dois melhores setups. Lote: 1
-          mini o tempo todo, ou +1 a cada múltiplo da banca (teto 16). Stop diário em pontos é o mesmo nas duas bancas.
-          Ponto = {brl(data.instrument.point_value)}.
+          Banca de R$ 500 ou R$ 1.000. Tempo gráfico de 1 min, com os dois melhores setups de cada caso. Lote: 1 mini o
+          tempo todo, ou +1 a cada múltiplo da banca (teto 16). Stop diário em pontos é o mesmo nas duas bancas. Ponto ={' '}
+          {brl(data.instrument.point_value)}.
         </p>
       </section>
 
@@ -482,11 +471,11 @@ export function StudyPage() {
       <section id="setups" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
         <h2 className="font-display text-3xl font-bold">Melhor e segundo melhor</h2>
         <p className="mt-2 max-w-2xl text-muted-foreground">
-          Filtre por caso, banca e tempo gráfico. Cada combinação tem os dois melhores setups. 1 mini é o ranking; lote
-          que sobe é o mesmo setup. {scaleHint} Gerado em {new Date(data.generated_at).toLocaleString('pt-BR')}.
+          Filtre por caso e banca. Cada combinação tem os dois melhores setups no 1 min. 1 mini é o ranking; lote que
+          sobe é o mesmo setup. {scaleHint} Gerado em {new Date(data.generated_at).toLocaleString('pt-BR')}.
         </p>
 
-        <div className="mt-6 grid gap-4 rounded-2xl border border-border bg-elevated/40 p-4 sm:grid-cols-3">
+        <div className="mt-6 grid gap-4 rounded-2xl border border-border bg-elevated/40 p-4 sm:grid-cols-2">
           <div>
             <p className="text-xs uppercase tracking-wide text-muted-foreground">Caso</p>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -529,28 +518,6 @@ export function StudyPage() {
               })}
             </div>
           </div>
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Tempo gráfico</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {TIMEFRAMES.map((item) => (
-                <Button
-                  key={item.key}
-                  variant={tf === item.key ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => {
-                    setTf(item.key)
-                    setPick(0)
-                    setChartScaled(false)
-                  }}
-                >
-                  {item.label}
-                </Button>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {tf === 'm1' ? 'Candle de 1 minuto.' : 'Candle de 5 minutos.'}
-            </p>
-          </div>
         </div>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -566,7 +533,7 @@ export function StudyPage() {
         </div>
         {!winner ? (
           <p className="mt-6 rounded-2xl border border-border bg-elevated/50 p-5 text-sm text-muted-foreground">
-            Nenhum setup rodou neste caso, banca e tempo gráfico.
+            Nenhum setup rodou neste caso e nesta banca.
           </p>
         ) : null}
 
