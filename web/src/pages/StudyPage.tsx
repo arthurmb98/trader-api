@@ -369,7 +369,6 @@ export function StudyPage() {
             )
           })}
         </div>
-        </div>
         {hasCompound ? (
           <div className="mt-4 flex flex-wrap gap-2">
             <Button variant={!compound ? 'default' : 'outline'} size="sm" onClick={() => setCompound(false)}>
