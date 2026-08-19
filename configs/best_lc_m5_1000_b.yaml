@@ -1,6 +1,6 @@
-name: best_m5_500_a
+name: best_lc_m5_1000_b
 account:
-  initial_bank: 500.0
+  initial_bank: 1000.0
   contracts: 1
   point_value: 0.2
   contract_cost: 1.0
@@ -13,8 +13,8 @@ data:
   timeframe: m5
 risk:
   mode: fixed
-  stop_points: 100.0
-  gain_points: 200.0
+  stop_points: 120.0
+  gain_points: 240.0
   rr_ratio: 2.0
   atr_period: 14
   atr_stop_mult: 1.5
@@ -22,7 +22,7 @@ risk:
   trailing_enabled: true
   trailing_trigger_points: 60.0
   trailing_distance_points: 50.0
-  daily_loss_points: 80.0
+  daily_loss_points: 0.0
   max_trades_per_day: 8
 filters:
   session_start: 09:15
@@ -38,6 +38,7 @@ execution:
   direction: follow
   entry_mode: market_open
   entry_offset_points: 0.0
+  decision: ml
 mt5:
   enabled: false
   symbol: WIN$

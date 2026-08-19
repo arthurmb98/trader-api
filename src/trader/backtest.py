@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import datetime, time
 
 import numpy as np
@@ -61,12 +60,10 @@ def _mean(values: list[float]) -> float:
 
 
 def contracts_for_bank(bank: float, initial_bank: float, cap: int = 16) -> int:
-    """1 at 1×, 2 at 2×, 4 at 4×, 8 at 8×… follows current bank, not martingale."""
-    if initial_bank <= 0 or bank < initial_bank:
+    """+1 contract every multiple of the initial bank (500→1c, 1000→2c, 1500→3c…)."""
+    if initial_bank <= 0:
         return 1
-    ratio = bank / initial_bank
-    exp = int(math.floor(math.log2(ratio)))
-    return min(cap, max(1, 2**exp))
+    return min(cap, max(1, int(bank // initial_bank)))
 
 
 class BacktestEngine:
@@ -77,7 +74,14 @@ class BacktestEngine:
         self.session = SessionFilter(config)
         self.risk = RiskCalculator(config)
 
-    def run(self, test: pd.DataFrame, predicted: pd.DataFrame, compound: bool = False) -> StudyMetrics:
+    def run(
+        self,
+        test: pd.DataFrame,
+        predicted: pd.DataFrame,
+        compound: bool = False,
+        pa_sides: np.ndarray | None = None,
+        strange_mask: np.ndarray | None = None,
+    ) -> StudyMetrics:
         acc = self.config.account
         flt = self.config.filters
         exe = self.config.execution
@@ -96,6 +100,11 @@ class BacktestEngine:
         day_pnl = 0.0
         trades_today = 0
         fade = exe.direction == "fade"
+        decision = str(getattr(exe, "decision", "ml") or "ml")
+        use_guard = decision == "ml_guard"
+        use_pa = decision == "price_action_ml"
+        pa_arr = pa_sides if pa_sides is not None else None
+        strange_arr = strange_mask if strange_mask is not None else None
         opens = test["Abertura"].to_numpy(dtype=float)
         highs = test["Máximo"].to_numpy(dtype=float)
         lows = test["Mínimo"].to_numpy(dtype=float)
@@ -131,14 +140,16 @@ class BacktestEngine:
 
             key = ts.date()
             if key != day_key:
-                day_key = key
-                day_pnl = 0.0
-                trades_today = 0
                 if position is not None:
                     trades.append(self._close(position, prev_ts, float(prev_close), "fim_do_dia"))
                     bank += trades[-1].pnl
-                    day_pnl = 0.0
+                    peak = max(peak, bank)
+                    max_dd = max(max_dd, peak - bank)
+                    equity.append({"t": prev_ts.isoformat(), "bank": round(bank, 2)})
                     position = None
+                day_key = key
+                day_pnl = 0.0
+                trades_today = 0
 
             if position is not None:
                 exit_price, reason = self._manage(position, o, h, l, c)
@@ -155,6 +166,8 @@ class BacktestEngine:
                     position = None
 
             if position is not None:
+                continue
+            if flatten[i]:
                 continue
             if not allowed[i]:
                 continue
@@ -183,9 +196,23 @@ class BacktestEngine:
             if pred_body < min_body:
                 continue
 
-            side = Side.BUY if pred_close >= prev_close else Side.SELL
-            if fade:
-                side = side.opposite()
+            if use_guard:
+                if strange_arr is None or i - 1 >= len(strange_arr) or bool(strange_arr[i - 1]):
+                    continue
+            if use_pa:
+                if pa_arr is None or i - 1 >= len(pa_arr):
+                    continue
+                pa = int(pa_arr[i - 1])
+                if pa == 0:
+                    continue
+                ml_dir = 1 if pred_close >= prev_close else -1
+                if pa != ml_dir:
+                    continue
+                side = Side.BUY if pa > 0 else Side.SELL
+            else:
+                side = Side.BUY if pred_close >= prev_close else Side.SELL
+                if fade:
+                    side = side.opposite()
 
             if limit_inside:
                 if side is Side.BUY:

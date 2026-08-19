@@ -1,8 +1,8 @@
-name: default
+name: best_candles_m1_500_a
 account:
-  initial_bank: 1000
+  initial_bank: 500.0
   contracts: 1
-  point_value: 0.20
+  point_value: 0.2
   contract_cost: 1.0
 instrument:
   symbol: WIN$
@@ -13,8 +13,8 @@ data:
   timeframe: m1
 risk:
   mode: fixed
-  stop_points: 100
-  gain_points: 200
+  stop_points: 100.0
+  gain_points: 200.0
   rr_ratio: 2.0
   atr_period: 14
   atr_stop_mult: 1.5
@@ -22,23 +22,23 @@ risk:
   trailing_enabled: false
   trailing_trigger_points: 80
   trailing_distance_points: 50
-  daily_loss_points: 150
+  daily_loss_points: 80.0
   max_trades_per_day: 8
 filters:
-  session_start: "09:15"
-  session_end: "17:00"
+  session_start: 09:15
+  session_end: '17:00'
   skip_lunch: true
-  lunch_start: "11:00"
-  lunch_end: "14:30"
+  lunch_start: '11:00'
+  lunch_end: '14:30'
   gold_hours_only: true
   min_predicted_range: 40
-  max_gap_points: 40
-  min_predicted_body: 0
+  max_gap_points: 40.0
+  min_predicted_body: 0.0
 execution:
-  direction: follow
+  direction: fade
   entry_mode: market_open
-  entry_offset_points: 0
-  decision: ml
+  entry_offset_points: 0.0
+  decision: ml_guard
 mt5:
   enabled: false
   symbol: WIN$

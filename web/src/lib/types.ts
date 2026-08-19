@@ -100,7 +100,10 @@ export type Winner = {
   metrics: Metrics
   by_year?: Record<string, YearSlice>
   by_period?: PeriodBreakdown
-  compound?: RunSide
+  lot_fixed?: RunSide
+  lot_scaled?: RunSide
+  linear?: RunSide
+  one_contract?: RunSide
   trades: {
     side: string
     entry_time: string
@@ -114,56 +117,48 @@ export type Winner = {
 }
 
 export type StudyBlock = {
-  leakage: Leakage
-  model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }
   n_configs: number
   n_viable?: number
   leaderboard: { net_pnl: number; n_trades: number; win_rate: number; profit_factor: number }[]
 }
 
-export type BankKey = '500' | '1000' | '5000'
-
-export type ParecerWhy = { title: string; body: string }
+export type BankKey = '500' | '1000'
+export type CaseKey = 'last_candle' | 'last_candles'
+export type TfKey = 'm1' | 'm5'
 
 export type ParecerMonthly = {
+  case: string
   bank: number
   name: string
   timeframe: string
   label: string
-  avg_1c: number
-  avg_compound: number
-  dd_pct_1c: number
-  dd_abs_1c: number
-  net_pnl_1c: number
-  net_pnl_compound: number
-  max_contracts: number
+  avg_fixed: number
+  avg_scaled: number
+  dd_pct: number
+  dd_abs: number
+  net_pnl: number
   n_months: number
-  note: string
+}
+
+export type ParecerCaseAvg = {
+  case: string
+  bank: number
+  name: string | null
+  timeframe?: string
+  label: string | null
+  avg_fixed: number | null
+  avg_scaled: number | null
+  n_months: number
 }
 
 export type Parecer = {
   headline: string
   ml_hit: { m1: number; m5: number }
   n_months_note: string
-  why_5k: ParecerWhy[]
+  by_case?: ParecerCaseAvg[]
   monthly: ParecerMonthly[]
   strategy: string[]
-  improvements: string[]
   dd_floor: string
-}
-
-export type CrossBankSetup = {
-  id: string
-  timeframe: string
-  label: string
-  source_name: string
-  note: string
-  params: {
-    risk: Record<string, number | string | boolean>
-    filters: Record<string, number | string | boolean | null>
-    execution: Record<string, number | string | boolean>
-  }
-  by_bank: Record<string, RunSide & { compound?: RunSide }>
 }
 
 export type StudyFile = {
@@ -172,16 +167,20 @@ export type StudyFile = {
   how_it_works: string[]
   insights: { worked: string[]; failed: string[]; improve: string[] }
   parecer?: Parecer
-  cross_bank?: CrossBankSetup[]
   frozen_configs: string[]
   mt5: { ready: boolean; default_enabled: boolean; steps: string[] }
   instrument: { name: string; point_value: number; tick: number; contracts?: number }
   banks: number[]
+  cases?: CaseKey[]
+  case_labels?: Record<string, string>
+  lookback?: { m1: number; m5: number }
+  timeframes_list?: TfKey[]
+  timeframe_labels?: Record<string, string>
   n_configs_total: number
   timeframes: {
-    m1: { leakage: Leakage; model_test: StudyBlock['model_test'] }
-    m5: { leakage: Leakage; model_test: StudyBlock['model_test'] }
+    m1: { leakage: Leakage; model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }; lookback?: number }
+    m5: { leakage: Leakage; model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }; lookback?: number }
   }
-  studies: Record<string, { m1: StudyBlock; m5: StudyBlock }>
-  winners: Record<string, { m1: Winner[]; m5: Winner[] }>
+  studies: Record<string, Record<string, StudyBlock>>
+  winners: Record<string, Record<string, Record<string, Winner[]> | Winner[]>>
 }

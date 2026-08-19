@@ -1,4 +1,4 @@
-name: best_m1_1000_b
+name: best_candles_m1_1000_b
 account:
   initial_bank: 1000.0
   contracts: 1
@@ -13,8 +13,8 @@ data:
   timeframe: m1
 risk:
   mode: fixed
-  stop_points: 100.0
-  gain_points: 100.0
+  stop_points: 150.0
+  gain_points: 150.0
   rr_ratio: 2.0
   atr_period: 14
   atr_stop_mult: 1.5
@@ -22,7 +22,7 @@ risk:
   trailing_enabled: false
   trailing_trigger_points: 80
   trailing_distance_points: 50
-  daily_loss_points: 150.0
+  daily_loss_points: 0.0
   max_trades_per_day: 8
 filters:
   session_start: 09:15
@@ -32,12 +32,13 @@ filters:
   lunch_end: '14:30'
   gold_hours_only: true
   min_predicted_range: 40
-  max_gap_points: 15.0
+  max_gap_points: 40.0
   min_predicted_body: 0.0
 execution:
-  direction: follow
-  entry_mode: limit_inside
-  entry_offset_points: 120.0
+  direction: fade
+  entry_mode: market_open
+  entry_offset_points: 0.0
+  decision: ml_guard
 mt5:
   enabled: false
   symbol: WIN$

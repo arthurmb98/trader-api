@@ -11,85 +11,98 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { Activity, AlertTriangle, CheckCircle2, Cpu, LineChart, Shield } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { brl, cn, num, pct } from '@/lib/utils'
-import type { BankKey, CrossBankSetup, Parecer, PeriodRow, StudyFile, Winner } from '@/lib/types'
+import type { BankKey, CaseKey, Parecer, ParecerCaseAvg, PeriodRow, RunSide, StudyFile, TfKey, Winner } from '@/lib/types'
 
-function stopGainLabel(winner: Winner) {
+const SIGNAL_CASES: { key: CaseKey; label: string; help: string }[] = [
+  {
+    key: 'last_candle',
+    label: 'Último candle',
+    help: 'O modelo lê o candle que acabou de fechar e escolhe compra ou venda.',
+  },
+  {
+    key: 'last_candles',
+    label: 'Últimos candles',
+    help: 'O mesmo modelo escolhe o lado. Padrões só cancelam se o mercado estiver estranho.',
+  },
+]
+const CASE_HELP = Object.fromEntries(SIGNAL_CASES.map((c) => [c.key, c.help])) as Record<CaseKey, string>
+const CASE_LABELS = Object.fromEntries(SIGNAL_CASES.map((c) => [c.key, c.label])) as Record<CaseKey, string>
+const TIMEFRAMES: { key: TfKey; label: string }[] = [
+  { key: 'm1', label: '1 min' },
+  { key: 'm5', label: '5 min' },
+]
+const BANKS: BankKey[] = ['500', '1000']
+
+function listWinners(data: StudyFile | null, caseKey: CaseKey, bank: BankKey, tf: TfKey): Winner[] {
+  const node = data?.winners?.[caseKey]?.[bank]
+  if (!node) return []
+  if (Array.isArray(node)) {
+    return node.filter((winner) => (winner.params.data.timeframe === 'm5' ? 'm5' : 'm1') === tf)
+  }
+  return node[tf] ?? []
+}
+
+function tfOf(row: { timeframe?: string }): TfKey {
+  return row.timeframe === 'm1' ? 'm1' : 'm5'
+}
+
+function setupLabel(winner: Winner) {
   const risk = winner.params.risk
-  const mode = String(risk.mode)
-  const trailing = Boolean(risk.trailing_enabled)
-  if (mode === 'atr') {
-    return {
-      stop: `ATR × ${risk.atr_stop_mult}`,
-      gain: `ATR × ${risk.atr_gain_mult}`,
-      trailing,
-    }
-  }
-  return {
-    stop: `${risk.stop_points} pts`,
-    gain: `${risk.gain_points} pts`,
-    trailing,
-  }
+  const exe = winner.params.execution
+  const tf = winner.params.data.timeframe === 'm5' ? '5 min' : '1 min'
+  const dir = exe.direction === 'fade' ? 'contra a previsão' : 'seguir'
+  const trail = risk.trailing_enabled ? ' · trailing' : ''
+  return `${tf} · ${dir} · ${risk.stop_points}/${risk.gain_points}${trail}`
 }
 
-const PARAM_LABELS: Record<string, string> = {
-  initial_bank: 'Banca inicial',
-  contracts: 'Contratos',
-  point_value: 'Valor do ponto',
-  contract_cost: 'Custo por operação',
-  mode: 'Tipo de stop/gain',
-  stop_points: 'Stop (pontos)',
-  gain_points: 'Alvo (pontos)',
-  rr_ratio: 'Risco/retorno',
-  atr_period: 'ATR (períodos)',
-  atr_stop_mult: 'Stop × ATR',
-  atr_gain_mult: 'Alvo × ATR',
-  trailing_enabled: 'Stop móvel',
-  trailing_trigger_points: 'Ativa trailing em',
-  trailing_distance_points: 'Distância do trailing',
-  daily_loss_points: 'Stop diário (pontos)',
-  max_trades_per_day: 'Máx. operações/dia',
-  session_start: 'Início da sessão',
-  session_end: 'Fim da sessão',
-  skip_lunch: 'Evitar almoço',
-  lunch_start: 'Almoço de',
-  lunch_end: 'Almoço até',
-  gold_hours_only: 'Só horário-ouro',
-  min_predicted_range: 'Range mínimo previsto',
-  max_gap_points: 'Gap máximo',
-  min_predicted_body: 'Corpo mínimo previsto',
-  direction: 'Direção',
-  entry_mode: 'Tipo de entrada',
-  entry_offset_points: 'Offset da ordem',
-  timeframe: 'Tempo gráfico',
-  train_csv: 'Arquivo de treino',
-  test_csv: 'Arquivo de teste',
-  symbol: 'Símbolo',
-  tick_size: 'Tick',
+function avgMonth(side: RunSide | Winner | undefined) {
+  if (!side?.metrics) return 0
+  const months = Math.max(side.by_period?.monthly?.length ?? 0, 1)
+  return side.metrics.net_pnl / months
 }
 
-function formatParam(key: string, value: unknown) {
-  if (typeof value === 'boolean') return value ? 'sim' : 'não'
-  if (value === null || value === undefined) return 'sem limite'
-  if (key.includes('bank') || key === 'point_value' || key === 'contract_cost') {
-    return brl(Number(value))
-  }
-  if (key === 'direction') return value === 'follow' ? 'seguir a previsão' : 'contra a previsão (fade)'
-  if (key === 'entry_mode') return value === 'market_open' ? 'a mercado na abertura' : 'limitada dentro do range'
-  if (key === 'mode') {
-    const map: Record<string, string> = {
-      fixed: 'stop e alvo fixos',
-      rr: 'alvo em múltiplo do stop',
-      atr: 'stop/alvo pelo ATR',
-    }
-    return map[String(value)] ?? String(value)
-  }
-  return String(value)
+function lotSide(winner: Winner | undefined, scaled: boolean) {
+  if (!winner) return undefined
+  if (scaled) return winner.lot_scaled ?? winner.linear ?? winner
+  return winner.lot_fixed ?? winner.one_contract ?? winner
 }
 
-function Kpi({ label, value, hint, positive }: { label: string; value: string; hint?: string; positive?: boolean | null }) {
+function LotCol({ label, side, hint }: { label: string; side: RunSide | Winner | undefined; hint?: string }) {
+  if (!side?.metrics) return null
+  const monthly = avgMonth(side)
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/40 p-3">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={cn('mt-2 font-display text-2xl font-bold', monthly >= 0 ? 'text-gain' : 'text-loss')}>{brl(monthly)}</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        /mês · total {brl(side.metrics.net_pnl)} · tombo {pct(side.metrics.max_drawdown_pct)}
+        {side.metrics.max_contracts && side.metrics.max_contracts > 1 ? ` · até ${side.metrics.max_contracts} minis` : ''}
+      </p>
+      {hint ? <p className="mt-2 text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  )
+}
+
+function formatDecision(value: unknown) {
+  if (value === 'ml_guard') return 'ML + guarda dos últimos candles'
+  if (value === 'price_action_ml') return 'padrões definem o lado'
+  return 'só o modelo no último candle'
+}
+
+function Kpi({
+  label,
+  value,
+  hint,
+  positive,
+}: {
+  label: string
+  value: string
+  hint?: string
+  positive?: boolean | null
+}) {
   return (
     <div className="rounded-2xl border border-border bg-elevated/70 p-4">
       <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -139,17 +152,15 @@ function WinnerCard({
   title,
   active,
   onClick,
-  compound,
 }: {
   winner: Winner
   title: string
   active: boolean
   onClick: () => void
-  compound: boolean
 }) {
-  const m = compound && winner.compound ? winner.compound.metrics : winner.metrics
-  const sg = stopGainLabel(winner)
-  const y26 = (compound ? winner.compound?.by_year : winner.by_year)?.['2026']
+  const fixed = lotSide(winner, false)
+  const scaled = lotSide(winner, true)
+  const monthly = avgMonth(fixed)
   return (
     <button
       type="button"
@@ -159,210 +170,132 @@ function WinnerCard({
         active ? 'border-primary bg-card' : 'border-border bg-elevated/50 hover:bg-card/80',
       )}
     >
-      <p className="text-sm text-muted-foreground">{title}</p>
-      <p className="mt-1 font-display text-xl font-semibold">{winner.params.name}</p>
-      <p className={cn('mt-3 text-3xl font-bold', m.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>{brl(m.net_pnl)}</p>
-      <p className="mt-2 text-sm text-foreground/90">
-        Stop {sg.stop} · Alvo {sg.gain}
-        {sg.trailing ? ' · trailing' : ''}
+      <p className="text-sm text-muted-foreground">
+        {title}
+        {monthly < 0 ? ' · prejuízo no teste' : ''}
       </p>
-      <p className="mt-1 text-sm text-muted-foreground">
-        {m.n_trades} operações · acerto {pct(m.win_rate)} · fator {num(m.profit_factor, 2)}
-      </p>
-      {y26 ? (
-        <p className={cn('mt-2 text-xs', y26.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>
-          2026: {brl(y26.net_pnl)}
-        </p>
-      ) : null}
+      <p className="mt-1 font-display text-lg font-semibold">{setupLabel(winner)}</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <LotCol label="1 mini" side={fixed} hint="Ranking" />
+        <LotCol label="Lote que sobe" side={scaled} hint="Mesmo setup, mais minis" />
+      </div>
     </button>
   )
 }
 
-function visibleParams(title: string, obj: Record<string, unknown>, mode: string) {
-  return Object.entries(obj).filter(([k]) => {
-    if (title === 'Risco' && mode === 'atr' && (k === 'stop_points' || k === 'gain_points' || k === 'rr_ratio')) return false
-    if (title === 'Risco' && mode === 'fixed' && (k.startsWith('atr_') || k === 'rr_ratio')) return false
-    if (title === 'Risco' && mode === 'rr' && (k.startsWith('atr_') || k === 'gain_points')) return false
-    if (title === 'Risco' && k.startsWith('trailing') && obj.trailing_enabled === false && k !== 'trailing_enabled') return false
-    if (title === 'Execução' && obj.entry_mode !== 'limit_inside' && k === 'entry_offset_points') return false
-    return true
-  })
-}
-
-function ParamGrid({ winner }: { winner: Winner }) {
-  const mode = String(winner.params.risk.mode)
-  const blocks = [
-    ['Conta', winner.params.account],
-    ['Risco', winner.params.risk],
-    ['Filtros', winner.params.filters],
-    ['Execução', winner.params.execution],
-    ['Dados', winner.params.data],
-  ] as const
+function SetupParams({ winner }: { winner: Winner }) {
+  const risk = winner.params.risk
+  const filters = winner.params.filters
+  const exe = winner.params.execution
+  const rows: [string, string][] = [
+    ['Tempo gráfico', winner.params.data.timeframe === 'm5' ? '5 minutos' : '1 minuto'],
+    ['Como decide', formatDecision(exe.decision)],
+    ['Direção', exe.direction === 'fade' ? 'contra a previsão' : 'seguir a previsão'],
+    ['Stop', `${risk.stop_points} pts`],
+    ['Alvo', `${risk.gain_points} pts`],
+    ['Trailing', risk.trailing_enabled ? `sim, após ${risk.trailing_trigger_points} pts` : 'não'],
+    ['Stop diário', Number(risk.daily_loss_points) > 0 ? `${risk.daily_loss_points} pts` : 'desligado'],
+    ['Máx. ops / dia', String(risk.max_trades_per_day)],
+    ['Horário-ouro', filters.gold_hours_only ? 'sim' : 'não'],
+    ['Gap máximo', filters.max_gap_points == null ? 'sem limite' : `${filters.max_gap_points} pts`],
+  ]
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {blocks.map(([title, obj]) => (
-        <div key={title} className="rounded-2xl border border-border bg-elevated/50 p-4">
-          <h4 className="font-display text-sm font-semibold text-primary">{title}</h4>
-          <dl className="mt-3 space-y-2">
-            {visibleParams(title, obj as Record<string, unknown>, mode).map(([k, v]) => (
-              <div key={k} className="flex items-start justify-between gap-4 text-sm">
-                <dt className="text-muted-foreground">{PARAM_LABELS[k] ?? k}</dt>
-                <dd className="text-right font-medium">{formatParam(k, v)}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-      ))}
+    <div className="rounded-2xl border border-border bg-elevated/50 p-4">
+      <h4 className="font-display text-sm font-semibold text-primary">O que muda neste setup</h4>
+      <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-start justify-between gap-4 text-sm">
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="text-right font-medium">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Igual em todos: sessão 9h15–17h, sem almoço, fill na abertura seguinte, custo R$ 1 por operação.
+      </p>
     </div>
   )
 }
 
-function CrossBankTable({ setups }: { setups: CrossBankSetup[] }) {
-  return (
-    <div className="space-y-6">
-      {setups.map((setup) => (
-        <div key={setup.id} className="overflow-x-auto rounded-2xl border border-border bg-elevated/40 p-4">
-          <p className="font-display font-semibold">
-            {setup.timeframe === 'm1' ? '1 minuto' : '5 minutos'} · {setup.label}
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">{setup.note}</p>
-          <table className="mt-4 w-full min-w-[640px] text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="pb-2 font-medium">Banca</th>
-                <th className="pb-2 font-medium">P&L 1 contrato</th>
-                <th className="pb-2 font-medium">Tombo</th>
-                <th className="pb-2 font-medium">P&L composto</th>
-                <th className="pb-2 font-medium">Máx. contratos</th>
-              </tr>
-            </thead>
-            <tbody>
-              {['500', '1000', '5000'].map((key) => {
-                const side = setup.by_bank[key]
-                if (!side) return null
-                const compound = side.compound
-                return (
-                  <tr key={key} className="border-t border-border/70">
-                    <td className="py-2 font-medium">{brl(Number(key))}</td>
-                    <td className={side.metrics.net_pnl >= 0 ? 'text-gain' : 'text-loss'}>
-                      {brl(side.metrics.net_pnl)}
-                    </td>
-                    <td>
-                      {brl(side.metrics.max_drawdown)}{' '}
-                      <span className="text-muted-foreground">({pct(side.metrics.max_drawdown_pct)})</span>
-                    </td>
-                    <td className={compound && compound.metrics.net_pnl >= 0 ? 'text-gain' : 'text-loss'}>
-                      {compound ? brl(compound.metrics.net_pnl) : '—'}
-                    </td>
-                    <td>{compound?.max_contracts ?? side.max_contracts ?? 1}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ))}
-    </div>
-  )
-}
+function CaseCompare({
+  parecer,
+  caseLabels,
+  caseList,
+  lookback,
+  onPick,
+}: {
+  parecer: Parecer
+  caseLabels: Record<string, string>
+  caseList: CaseKey[]
+  lookback: { m1: number; m5: number }
+  onPick: (key: CaseKey, bank?: BankKey, tf?: TfKey) => void
+}) {
+  const rows = parecer.by_case?.length
+    ? parecer.by_case
+    : parecer.monthly.reduce<ParecerCaseAvg[]>((acc, row) => {
+        if (acc.some((item) => item.case === row.case && item.bank === row.bank && tfOf(item) === tfOf(row))) return acc
+        acc.push(row)
+        return acc
+      }, [])
 
-function ParecerSection({ parecer, crossBank }: { parecer: Parecer; crossBank: CrossBankSetup[] }) {
-  const banks = [...new Set(parecer.monthly.map((row) => row.bank))]
   return (
     <section id="parecer" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
-      <p className="text-sm uppercase tracking-[0.2em] text-primary">Parecer</p>
+      <p className="text-sm uppercase tracking-[0.2em] text-primary">Comparar</p>
       <h2 className="mt-2 font-display text-3xl font-bold">{parecer.headline}</h2>
       <p className="mt-3 max-w-3xl text-muted-foreground">
-        Acerto de direção do ML: {pct(parecer.ml_hit.m1)} em 1 min e {pct(parecer.ml_hit.m5)} em 5 min — pouco melhor
-        que cara ou coroa. Custo de R$ 1 por operação já está no P&L. {parecer.dd_floor}
+        Número grande = ganho médio mensal do melhor setup de cada caso, banca e tempo gráfico.{' '}
+        {parecer.n_months_note} Acerto do ML: {pct(parecer.ml_hit.m1)} no 1 min ({lookback.m1} candles de contexto na
+        guarda) e {pct(parecer.ml_hit.m5)} no 5 min ({lookback.m5} candles). {parecer.dd_floor}
       </p>
-
-      <h3 className="mt-8 font-display text-2xl font-bold">Por que R$ 5.000 parece pior</h3>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        {parecer.why_5k.map((item) => (
-          <div key={item.title} className="rounded-2xl border border-border bg-elevated/50 p-5">
-            <h4 className="font-display font-semibold">{item.title}</h4>
-            <p className="mt-2 text-sm text-foreground/90">{item.body}</p>
+      <div className="mt-8 grid gap-4 lg:grid-cols-2">
+        {caseList.map((key) => (
+          <div key={key} className="rounded-2xl border border-border bg-elevated/50 p-5">
+            <p className="font-display text-xl font-semibold">{CASE_LABELS[key] ?? caseLabels[key] ?? key}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{CASE_HELP[key]}</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              {BANKS.map((bank) => (
+                <div key={`${key}-${bank}`} className="rounded-xl border border-border/70 bg-card/40 p-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">{brl(Number(bank))}</p>
+                  <div className="mt-3 grid gap-2">
+                    {TIMEFRAMES.map((tf) => {
+                      const row = rows.find((item) => item.case === key && String(item.bank) === bank && tfOf(item) === tf.key)
+                      return (
+                        <button
+                          key={tf.key}
+                          type="button"
+                          onClick={() => onPick(key, bank, tf.key)}
+                          className="rounded-lg border border-border/60 bg-background/40 p-2 text-left transition-colors hover:border-primary"
+                        >
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{tf.label}</p>
+                          {row?.avg_fixed == null ? (
+                            <p className="mt-1 text-xs text-muted-foreground">Sem setup neste recorte.</p>
+                          ) : (
+                            <>
+                              <p className={cn('mt-1 font-display text-xl font-bold', row.avg_fixed >= 0 ? 'text-gain' : 'text-loss')}>
+                                {brl(row.avg_fixed)}
+                              </p>
+                              <p className="text-[11px] text-muted-foreground">1 mini / mês</p>
+                              <p className={cn('mt-1 text-xs font-medium', (row.avg_scaled ?? 0) >= 0 ? 'text-gain' : 'text-loss')}>
+                                {brl(row.avg_scaled ?? 0)}{' '}
+                                <span className="font-normal text-muted-foreground">lote que sobe</span>
+                              </p>
+                            </>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
-
-      <h3 className="mt-10 font-display text-2xl font-bold">Ganho médio mensal</h3>
-      <p className="mt-2 text-sm text-muted-foreground">{parecer.n_months_note}</p>
-      <div className="mt-4 space-y-6">
-        {banks.map((bank) => {
-          const rows = parecer.monthly.filter((row) => row.bank === bank)
-          return (
-            <div key={bank} className="overflow-x-auto rounded-2xl border border-border bg-elevated/40 p-4">
-              <p className="font-display font-semibold">Banca {brl(bank)}</p>
-              <table className="mt-3 w-full min-w-[720px] text-left text-sm">
-                <thead className="text-xs uppercase tracking-wide text-muted-foreground">
-                  <tr>
-                    <th className="pb-2 font-medium">Setup</th>
-                    <th className="pb-2 font-medium">1 contrato / mês</th>
-                    <th className="pb-2 font-medium">Composto / mês</th>
-                    <th className="pb-2 font-medium">Tombo 1c</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.name} className="border-t border-border/70">
-                      <td className="py-2">
-                        <p className="font-medium">{row.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {row.timeframe === 'm1' ? '1 min' : '5 min'} · {row.label}
-                          {row.note ? ` · ${row.note}` : ''}
-                        </p>
-                      </td>
-                      <td className={row.avg_1c >= 0 ? 'text-gain' : 'text-loss'}>{brl(row.avg_1c)}</td>
-                      <td className={row.avg_compound >= 0 ? 'text-gain' : 'text-loss'}>
-                        {brl(row.avg_compound)}
-                        <span className="ml-1 text-xs text-muted-foreground">até {row.max_contracts}c</span>
-                      </td>
-                      <td>
-                        {brl(row.dd_abs_1c)}{' '}
-                        <span className="text-muted-foreground">({pct(row.dd_pct_1c)})</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        })}
-      </div>
-
-      {crossBank.length ? (
-        <>
-          <h3 className="mt-10 font-display text-2xl font-bold">A mesma config nas 3 bancas</h3>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Nº 1 de 1 min e de 5 min da banca R$ 1.000, reaplicados em R$ 500, R$ 1.000 e R$ 5.000 sem mudar stop,
-            alvo ou stop diário.
-          </p>
-          <div className="mt-4">
-            <CrossBankTable setups={crossBank} />
-          </div>
-        </>
-      ) : null}
-
-      <div className="mt-10 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
-          <h3 className="font-display font-semibold">O que o estudo diz</h3>
-          <ul className="mt-3 space-y-2 text-sm text-foreground/90">
-            {parecer.strategy.map((item) => (
-              <li key={item}>· {item}</li>
-            ))}
-          </ul>
-        </div>
-        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
-          <h3 className="font-display font-semibold">Melhorias simples</h3>
-          <ul className="mt-3 space-y-2 text-sm text-foreground/90">
-            {parecer.improvements.map((item) => (
-              <li key={item}>· {item}</li>
-            ))}
-          </ul>
-        </div>
-      </div>
+      <ul className="mt-8 space-y-2 text-sm text-foreground/90">
+        {parecer.strategy.map((item) => (
+          <li key={item}>· {item}</li>
+        ))}
+      </ul>
     </section>
   )
 }
@@ -370,21 +303,35 @@ function ParecerSection({ parecer, crossBank }: { parecer: Parecer; crossBank: C
 export function StudyPage() {
   const [data, setData] = useState<StudyFile | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [caseKey, setCaseKey] = useState<CaseKey>('last_candle')
   const [bank, setBank] = useState<BankKey>('1000')
-  const [pick, setPick] = useState<{ tf: 'm1' | 'm5'; i: number }>({ tf: 'm1', i: 0 })
-  const [compound, setCompound] = useState(false)
+  const [tf, setTf] = useState<TfKey>('m5')
+  const [pick, setPick] = useState(0)
+  const [chartScaled, setChartScaled] = useState(false)
+  const [showIntra, setShowIntra] = useState(false)
 
   useEffect(() => {
     const load = async () => {
-      const urls = ['/studies.json', '/api/studies']
+      const bust = `v=${Date.now()}`
+      const urls = [`/studies.json?${bust}`, `/api/studies?${bust}`]
       for (const url of urls) {
         try {
-          const res = await fetch(url)
+          const res = await fetch(url, { cache: 'no-store' })
           if (!res.ok) continue
           const json = (await res.json()) as StudyFile
+          const winnerKeys = Object.keys(json.winners ?? {})
+          if (winnerKeys.includes('one_contract') && !winnerKeys.includes('last_candle')) {
+            continue
+          }
+          if (winnerKeys.includes('last_candles_ml') && !winnerKeys.includes('last_candles')) {
+            continue
+          }
           setData(json)
-          const first = String(json.banks?.[1] ?? json.banks?.[0] ?? 1000) as BankKey
-          if (json.winners[first]) setBank(first)
+          setCaseKey('last_candle')
+          const firstBank = String(json.banks?.[1] ?? json.banks?.[0] ?? 1000) as BankKey
+          setBank(firstBank)
+          setTf('m5')
+          setChartScaled(false)
           return
         } catch {
           /* try next */
@@ -395,9 +342,9 @@ export function StudyPage() {
     void load()
   }, [])
 
-  const tfList = data?.winners[bank]?.[pick.tf] ?? []
-  const winner = tfList[Math.min(pick.i, Math.max(tfList.length - 1, 0))]
-  const side = compound && winner?.compound ? winner.compound : winner
+  const caseWinners = listWinners(data, caseKey, bank, tf)
+  const winner = caseWinners[Math.min(pick, Math.max(caseWinners.length - 1, 0))]
+  const side = lotSide(winner, chartScaled)
   const hourly = useMemo(() => {
     if (!side) return []
     return Object.entries(side.metrics.hourly)
@@ -413,7 +360,7 @@ export function StudyPage() {
       </main>
     )
   }
-  if (!data || !winner || !side) {
+  if (!data) {
     return (
       <main className="grid min-h-dvh place-items-center">
         <p className="animate-fade-in text-muted-foreground">Carregando o estudo…</p>
@@ -421,15 +368,25 @@ export function StudyPage() {
     )
   }
 
-  const m = side.metrics
+  const caseList = SIGNAL_CASES.map((item) => item.key)
+  const lookback = data.lookback ?? { m1: 10, m5: 5 }
   const leak = data.timeframes.m1.leakage
-  const tfBlock = data.timeframes[pick.tf]
-  const bankWinners = data.winners[bank]
-  const nConfigsBank = (data.studies[bank]?.m1.n_configs ?? 0) + (data.studies[bank]?.m5.n_configs ?? 0)
-  const years = side.by_year ?? {}
-  const periods = side.by_period
-  const sg = stopGainLabel(winner)
-  const hasCompound = Boolean(winner.compound)
+  const m = side?.metrics
+  const periods = side?.by_period ?? winner?.by_period
+  const bankNum = Number(bank)
+  const scaleHint =
+    bankNum === 500
+      ? 'Lote que sobe: 1 mini em R$ 500, 2 em R$ 1.000, teto 16.'
+      : 'Lote que sobe: 1 mini em R$ 1.000, 2 em R$ 2.000, teto 16.'
+
+  const pickCase = (key: CaseKey, nextBank?: BankKey, nextTf?: TfKey) => {
+    setCaseKey(key)
+    if (nextBank) setBank(nextBank)
+    if (nextTf) setTf(nextTf)
+    setPick(0)
+    setChartScaled(false)
+    document.getElementById('setups')?.scrollIntoView({ behavior: 'smooth' })
+  }
 
   return (
     <div className="relative min-h-dvh">
@@ -438,293 +395,233 @@ export function StudyPage() {
         <p className="font-display text-lg font-bold">Sinal WIN</p>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => document.getElementById('parecer')?.scrollIntoView()}>
-            Parecer
+            Comparar
           </Button>
           <Button variant="outline" size="sm" onClick={() => document.getElementById('setups')?.scrollIntoView()}>
-            Ver setups
+            Setups
           </Button>
           <Button size="sm" onClick={() => document.getElementById('mt5')?.scrollIntoView()}>
-            Caminho até o MT5
+            Até o MT5
           </Button>
         </div>
       </header>
 
-      <section className="relative mx-auto max-w-6xl px-5 pb-16 pt-10 sm:px-8">
+      <section className="relative mx-auto max-w-6xl px-5 pb-12 pt-10 sm:px-8">
         <p className="animate-fade-up text-sm uppercase tracking-[0.2em] text-primary">Estudo para sócios</p>
-        <h1 className="mt-4 max-w-3xl animate-fade-up font-display text-4xl font-bold leading-tight sm:text-6xl [animation-delay:80ms]">
-          Um robô que lê o último candle e sugere compra ou venda.
+        <h1 className="mt-4 max-w-3xl animate-fade-up font-display text-4xl font-bold leading-tight sm:text-5xl [animation-delay:80ms]">
+          O robô lê o último candle e sugere compra ou venda.
         </h1>
         <p className="mt-5 max-w-2xl animate-fade-up text-lg text-muted-foreground [animation-delay:140ms]">
-          Mini índice WIN$ contínuo. Ranking oficial com 1 contrato. Treino de ago/2021 a dez/2024. Teste de jan/2025 a ago/2026.
-          O modelo nunca vê os candles do teste. Três bancas — até duas melhores de 1 min e duas de 5 min em cada uma.
-          Setup com tombo maior ou igual à banca sai do ranking. Há uma simulação extra que dobra contratos quando a banca dobra.
+          Mini índice WIN$ contínuo. Treino até dez/2024, teste jan/2025–ago/2026. Sinal no fechamento, execução na
+          abertura do próximo candle. {leak.n_removed} candles repetidos saíram do teste.
         </p>
-        <div className="mt-8 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-2xl border border-border bg-elevated/60 p-4">
-            <Cpu className="size-5 text-primary" />
-            <p className="mt-3 font-display font-semibold">Parede em 2025</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Treino até 31/12/2024, teste a partir de 02/01/2025. {leak.n_removed} candles repetidos
-              removidos de {leak.n_test_original.toLocaleString('pt-BR')}.
-            </p>
-          </div>
-          <div className="rounded-2xl border border-border bg-elevated/60 p-4">
-            <LineChart className="size-5 text-violet" />
-            <p className="mt-3 font-display font-semibold">{data.n_configs_total.toLocaleString('pt-BR')} combinações</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Stop fixo, risco/retorno, ATR, trailing, horário-ouro e fade — ranking só no teste, com piso de 40 operações e teto de drawdown.
-            </p>
-          </div>
-          <div className="rounded-2xl border border-border bg-elevated/60 p-4">
-            <Shield className="size-5 text-pink" />
-            <p className="mt-3 font-display font-semibold">WIN$ contínuo</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Não é um vencimento só: há saltos de rolagem. O grid filtra gap grande. MT5 desligado até o paper.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
-        <h2 className="font-display text-3xl font-bold">Como ele decide</h2>
-        <ol className="mt-6 grid gap-4 sm:grid-cols-2">
-          {data.how_it_works.map((step, i) => (
-            <li key={step} className="rounded-2xl border border-border bg-elevated/50 p-5">
-              <span className="font-display text-sm text-primary">0{i + 1}</span>
-              <p className="mt-2 text-foreground/90">{step}</p>
-            </li>
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
+          {SIGNAL_CASES.map((item) => (
+            <div key={item.key} className="rounded-2xl border border-border bg-elevated/60 p-5">
+              <p className="font-display text-lg font-semibold">{item.label}</p>
+              <p className="mt-2 text-sm text-muted-foreground">{item.help}</p>
+              {item.key === 'last_candles' ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Janela da guarda: {lookback.m1} candles no 1 min, {lookback.m5} no 5 min.
+                </p>
+              ) : null}
+            </div>
           ))}
-        </ol>
-        <p className="mt-6 rounded-2xl border border-border bg-card/60 p-4 text-sm text-muted-foreground">
-          Ponto do mini índice = {brl(data.instrument.point_value)}. Tick = {data.instrument.tick} pontos. Sempre 1
-          contrato. Banca simulada selecionada: {brl(m.initial_bank)}.
+        </div>
+        <p className="mt-6 text-sm text-muted-foreground">
+          Banca de R$ 500 ou R$ 1.000. Tempo gráfico de 1 min ou 5 min, cada um com os dois melhores setups. Lote: 1
+          mini o tempo todo, ou +1 a cada múltiplo da banca (teto 16). Stop diário em pontos é o mesmo nas duas bancas.
+          Ponto = {brl(data.instrument.point_value)}.
         </p>
       </section>
 
-      {data.parecer ? <ParecerSection parecer={data.parecer} crossBank={data.cross_bank ?? []} /> : null}
+      {data.parecer ? (
+        <CaseCompare
+          parecer={data.parecer}
+          caseLabels={CASE_LABELS}
+          caseList={caseList}
+          lookback={lookback}
+          onPick={pickCase}
+        />
+      ) : null}
 
       <section id="setups" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
-        <h2 className="font-display text-3xl font-bold">As melhores estratégias por banca</h2>
+        <h2 className="font-display text-3xl font-bold">Melhor e segundo melhor</h2>
         <p className="mt-2 max-w-2xl text-muted-foreground">
-          {nConfigsBank.toLocaleString('pt-BR')} combinações nesta banca. Clique em um card para ver a curva, 2025 vs 2026 e cada parâmetro.
+          Filtre por caso, banca e tempo gráfico. Cada combinação tem os dois melhores setups. 1 mini é o ranking; lote
+          que sobe é o mesmo setup. {scaleHint} Gerado em {new Date(data.generated_at).toLocaleString('pt-BR')}.
         </p>
-        <div className="mt-5 flex flex-wrap gap-2">
-          {(data.banks.length ? data.banks : [500, 1000, 5000]).map((value) => {
-            const key = String(value) as BankKey
-            return (
-              <Button
-                key={key}
-                variant={bank === key ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => {
-                  setBank(key)
-                  setPick({ tf: 'm1', i: 0 })
-                }}
-              >
-                {brl(value)}
-              </Button>
-            )
-          })}
-        </div>
-        {hasCompound ? (
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button variant={!compound ? 'default' : 'outline'} size="sm" onClick={() => setCompound(false)}>
-              1 contrato (ranking)
-            </Button>
-            <Button variant={compound ? 'default' : 'outline'} size="sm" onClick={() => setCompound(true)}>
-              Contratos ×2 a cada 2× da banca
-            </Button>
+
+        <div className="mt-6 grid gap-4 rounded-2xl border border-border bg-elevated/40 p-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Caso</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {SIGNAL_CASES.map((item) => (
+                <Button
+                  key={item.key}
+                  variant={caseKey === item.key ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => {
+                    setCaseKey(item.key)
+                    setPick(0)
+                    setChartScaled(false)
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">{CASE_HELP[caseKey]}</p>
           </div>
-        ) : null}
-        {compound ? (
-          <p className="mt-3 text-sm text-muted-foreground">
-            Ilustração de alavancagem: 1 contrato até 2× a banca inicial, 2 até 4×, 4 até 8×, teto 16. Não é o critério do ranking.
-            {m.max_contracts ? ` Chegou a ${m.max_contracts} contratos.` : ''}
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Banca inicial</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(data.banks.length ? data.banks : [500, 1000]).map((value) => {
+                const key = String(value) as BankKey
+                return (
+                  <Button
+                    key={key}
+                    variant={bank === key ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => {
+                      setBank(key)
+                      setPick(0)
+                      setChartScaled(false)
+                    }}
+                  >
+                    {brl(value)}
+                  </Button>
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Tempo gráfico</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {TIMEFRAMES.map((item) => (
+                <Button
+                  key={item.key}
+                  variant={tf === item.key ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => {
+                    setTf(item.key)
+                    setPick(0)
+                    setChartScaled(false)
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {tf === 'm1' ? 'Candle de 1 minuto.' : 'Candle de 5 minutos.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          {caseWinners.map((w, i) => (
+            <WinnerCard
+              key={w.params.name || w.name}
+              winner={w}
+              title={i === 0 ? 'melhor' : 'segundo melhor'}
+              active={pick === i}
+              onClick={() => setPick(i)}
+            />
+          ))}
+        </div>
+        {!winner ? (
+          <p className="mt-6 rounded-2xl border border-border bg-elevated/50 p-5 text-sm text-muted-foreground">
+            Nenhum setup rodou neste caso, banca e tempo gráfico.
           </p>
         ) : null}
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {bankWinners.m1.map((w, i) => (
-            <WinnerCard
-              key={w.name}
-              winner={w}
-              title={`1 minuto · ${i === 0 ? 'melhor' : 'segundo melhor'}`}
-              active={pick.tf === 'm1' && pick.i === i}
-              onClick={() => setPick({ tf: 'm1', i })}
-              compound={compound}
-            />
-          ))}
-          {bankWinners.m5.map((w, i) => (
-            <WinnerCard
-              key={w.name}
-              winner={w}
-              title={`5 minutos · ${i === 0 ? 'melhor' : 'segundo melhor'}`}
-              active={pick.tf === 'm5' && pick.i === i}
-              onClick={() => setPick({ tf: 'm5', i })}
-              compound={compound}
-            />
-          ))}
-        </div>
 
-        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Kpi label="Lucro no teste" value={brl(m.net_pnl)} positive={m.net_pnl >= 0} />
-          <Kpi label="Stop" value={sg.stop} />
-          <Kpi label="Alvo" value={sg.gain} hint={sg.trailing ? 'com trailing' : undefined} />
-          <Kpi label="Taxa de acerto" value={pct(m.win_rate)} hint={`${m.n_wins} gains · ${m.n_losses} stops`} />
-          <Kpi label="Média / mediana do ganho" value={`${brl(m.avg_win)} · ${brl(m.median_win)}`} positive />
-          <Kpi label="Média / mediana da perda" value={`${brl(m.avg_loss)} · ${brl(m.median_loss)}`} positive={false} />
-          <Kpi label="Fator de lucro" value={num(m.profit_factor, 2)} hint="Acima de 1 = ganhos cobrem perdas" />
-          <Kpi label="Maior tombo" value={brl(m.max_drawdown)} hint={pct(m.max_drawdown_pct)} />
-          <Kpi label="Banca final" value={brl(m.final_bank)} />
-          <Kpi
-            label="Acerto de direção do ML"
-            value={pct(tfBlock.model_test.test_direction_hit * 100)}
-            hint="Só no arquivo de teste"
-          />
-        </div>
-
-        <div className="mt-8 grid gap-3 sm:grid-cols-2">
-          {Object.entries(years).map(([year, slice]) => (
-            <div key={year} className="rounded-2xl border border-border bg-elevated/50 p-4">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Robustez · {year}</p>
-              <p className={cn('mt-2 font-display text-2xl font-bold', slice.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>
-                {brl(slice.net_pnl)}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {slice.n_trades} operações · acerto {pct(slice.win_rate)} · tombo {pct(slice.max_drawdown_pct)}
-              </p>
+        {m && winner && side ? (
+          <>
+            <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Kpi label="P&L no teste (20 meses)" value={brl(m.net_pnl)} positive={m.net_pnl >= 0} />
+              <Kpi label="Maior tombo" value={brl(m.max_drawdown)} hint={pct(m.max_drawdown_pct)} />
+              <Kpi label="Acerto" value={pct(m.win_rate)} hint={`${m.n_wins} gains · ${m.n_losses} stops`} />
+              <Kpi label="Operações" value={String(m.n_trades)} hint={`fator ${num(m.profit_factor, 2)}`} />
             </div>
-          ))}
-        </div>
 
-        {periods ? (
-          <div className="mt-8 space-y-6">
-            <h3 className="font-display text-2xl font-bold">Ganho e perda por período</h3>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Kpi
-                label="Melhor / pior dia"
-                value={`${brl(periods.summary.day.best?.pnl ?? 0)} · ${brl(periods.summary.day.worst?.pnl ?? 0)}`}
-                hint={`${pct(periods.summary.day.positive_pct)} dos dias no azul · média ${brl(periods.summary.day.avg)}`}
-              />
-              <Kpi
-                label="Melhor / pior semana"
-                value={`${brl(periods.summary.week.best?.pnl ?? 0)} · ${brl(periods.summary.week.worst?.pnl ?? 0)}`}
-                hint={`média ${brl(periods.summary.week.avg)}`}
-              />
-              <Kpi
-                label="Melhor / pior mês"
-                value={`${brl(periods.summary.month.best?.pnl ?? 0)} · ${brl(periods.summary.month.worst?.pnl ?? 0)}`}
-                hint={`média ${brl(periods.summary.month.avg)}`}
-              />
+            <div className="mt-8 grid gap-6 lg:grid-cols-5">
+              <div className="rounded-2xl border border-border bg-elevated/40 p-4 lg:col-span-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-display font-semibold">Curva da banca</h3>
+                  <Button variant="outline" size="sm" onClick={() => setChartScaled((v) => !v)}>
+                    {chartScaled ? 'Ver curva em 1 mini' : 'Ver curva do lote que sobe'}
+                  </Button>
+                </div>
+                {chartScaled ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Mesmo setup, lote crescente. Tombo pode passar da banca — não entra no ranking.
+                  </p>
+                ) : null}
+                <div className="mt-4 h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={m.equity}>
+                      <defs>
+                        <linearGradient id="bank" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#058ef2" stopOpacity={0.7} />
+                          <stop offset="100%" stopColor="#9f2db3" stopOpacity={0.05} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
+                      <XAxis dataKey="t" hide />
+                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
+                      <Tooltip
+                        contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
+                        formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+                      />
+                      <Area type="monotone" dataKey="bank" stroke="#058ef2" fill="url(#bank)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-border bg-elevated/40 p-4 lg:col-span-2">
+                <h3 className="font-display font-semibold">Por horário</h3>
+                <div className="mt-4 h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={hourly}>
+                      <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
+                      <XAxis dataKey="hour" tick={{ fill: '#a1a1aa', fontSize: 12 }} />
+                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
+                      <Tooltip
+                        contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
+                        formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+                      />
+                      <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
+                        {hourly.map((row) => (
+                          <Cell key={row.hour} fill={row.pnl >= 0 ? '#34d399' : '#fb7185'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
-            <PeriodBars title="Diário" rows={periods.daily} />
-            <PeriodBars title="Semanal" rows={periods.weekly} />
-            <PeriodBars title="Mensal" rows={periods.monthly} />
-          </div>
+
+            {periods ? (
+              <div className="mt-8 space-y-4">
+                <PeriodBars title="Resultado mensal" rows={periods.monthly} />
+                <Button variant="outline" size="sm" onClick={() => setShowIntra((v) => !v)}>
+                  {showIntra ? 'Ocultar dias e semanas' : 'Ver dias e semanas'}
+                </Button>
+                {showIntra ? (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <PeriodBars title="Diário" rows={periods.daily} />
+                    <PeriodBars title="Semanal" rows={periods.weekly} />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="mt-8">
+              <SetupParams winner={winner} />
+            </div>
+          </>
         ) : null}
-
-        <div className="mt-8 grid gap-6 lg:grid-cols-5">
-          <div className="rounded-2xl border border-border bg-elevated/40 p-4 lg:col-span-3">
-            <h3 className="font-display font-semibold">Curva da banca</h3>
-            <div className="mt-4 h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={m.equity}>
-                  <defs>
-                    <linearGradient id="bank" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#058ef2" stopOpacity={0.7} />
-                      <stop offset="100%" stopColor="#9f2db3" stopOpacity={0.05} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
-                  <XAxis dataKey="t" hide />
-                  <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
-                  <Tooltip
-                    contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-                    formatter={(v: number | undefined) => brl(Number(v ?? 0))}
-                  />
-                  <Area type="monotone" dataKey="bank" stroke="#058ef2" fill="url(#bank)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-border bg-elevated/40 p-4 lg:col-span-2">
-            <h3 className="font-display font-semibold">Gains vs stops</h3>
-            <div className="mt-4 h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={[{ name: 'Gains', v: m.n_wins }, { name: 'Stops', v: m.n_losses }]}>
-                  <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fill: '#a1a1aa' }} />
-                  <YAxis tick={{ fill: '#a1a1aa' }} allowDecimals={false} />
-                  <Tooltip contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }} />
-                  <Bar dataKey="v" radius={[8, 8, 0, 0]}>
-                    <Cell fill="#34d399" />
-                    <Cell fill="#fb7185" />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl border border-border bg-elevated/40 p-4">
-          <h3 className="font-display font-semibold">Resultado por horário</h3>
-          <div className="mt-4 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={hourly}>
-                <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
-                <XAxis dataKey="hour" tick={{ fill: '#a1a1aa', fontSize: 12 }} />
-                <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
-                <Tooltip
-                  contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-                  formatter={(v: number | undefined) => brl(Number(v ?? 0))}
-                />
-                <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
-                  {hourly.map((row) => (
-                    <Cell key={row.hour} fill={row.pnl >= 0 ? '#34d399' : '#fb7185'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <h3 className="mt-10 font-display text-2xl font-bold">Todos os parâmetros deste setup</h3>
-        <p className="mt-2 text-sm text-muted-foreground">O que estiver neste quadro é exatamente o que o robô usou no teste.</p>
-        <div className="mt-4">
-          <ParamGrid winner={winner} />
-        </div>
-      </section>
-
-      <section className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
-        <h2 className="font-display text-3xl font-bold">O que deu certo, o que não deu, o que melhorar</h2>
-        <div className="mt-6 grid gap-4 lg:grid-cols-3">
-          <div className="rounded-2xl border border-border bg-elevated/50 p-5">
-            <CheckCircle2 className="size-5 text-gain" />
-            <h3 className="mt-3 font-display font-semibold">Funcionou</h3>
-            <ul className="mt-3 space-y-2 text-sm text-foreground/90">
-              {data.insights.worked.map((item) => (
-                <li key={item}>· {item}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="rounded-2xl border border-border bg-elevated/50 p-5">
-            <AlertTriangle className="size-5 text-pink" />
-            <h3 className="mt-3 font-display font-semibold">Não funcionou</h3>
-            <ul className="mt-3 space-y-2 text-sm text-foreground/90">
-              {data.insights.failed.map((item) => (
-                <li key={item}>· {item}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="rounded-2xl border border-border bg-elevated/50 p-5">
-            <Activity className="size-5 text-primary" />
-            <h3 className="mt-3 font-display font-semibold">Próximo passo</h3>
-            <ul className="mt-3 space-y-2 text-sm text-foreground/90">
-              {data.insights.improve.map((item) => (
-                <li key={item}>· {item}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
       </section>
 
       <section id="mt5" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
@@ -737,6 +634,13 @@ export function StudyPage() {
             </li>
           ))}
         </ol>
+        {data.insights.improve.length ? (
+          <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
+            {data.insights.improve.map((item) => (
+              <li key={item}>· {item}</li>
+            ))}
+          </ul>
+        ) : null}
         <p className="mt-6 text-sm text-muted-foreground">{data.disclaimer}</p>
         <p className="mt-2 text-xs text-muted-foreground">Gerado em {new Date(data.generated_at).toLocaleString('pt-BR')}</p>
       </section>
@@ -749,11 +653,7 @@ export function StudyPage() {
           rel="noreferrer"
           className="mt-5 inline-flex flex-col items-center gap-3 text-foreground hover:text-primary"
         >
-          <img
-            src="/brand/logo-branco.png"
-            alt="Koletivo Hub"
-            className="h-10 w-auto object-contain"
-          />
+          <img src="/brand/logo-branco.png" alt="Koletivo Hub" className="h-10 w-auto object-contain" />
           <span className="font-display text-sm font-semibold">Desenvolvido por Koletivo Hub</span>
         </a>
         <p className="mt-3 text-xs text-muted-foreground/70">

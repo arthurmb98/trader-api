@@ -1,6 +1,6 @@
-name: best_m5_5000_b
+name: best_lc_m5_500_b
 account:
-  initial_bank: 5000.0
+  initial_bank: 500.0
   contracts: 1
   point_value: 0.2
   contract_cost: 1.0
@@ -12,17 +12,17 @@ data:
   test_csv: datasets/WIN_5min_test.csv
   timeframe: m5
 risk:
-  mode: atr
-  stop_points: 100
-  gain_points: 200
+  mode: fixed
+  stop_points: 120.0
+  gain_points: 240.0
   rr_ratio: 2.0
   atr_period: 14
   atr_stop_mult: 1.5
   atr_gain_mult: 2.0
-  trailing_enabled: false
-  trailing_trigger_points: 80
-  trailing_distance_points: 50
-  daily_loss_points: 400.0
+  trailing_enabled: true
+  trailing_trigger_points: 60.0
+  trailing_distance_points: 50.0
+  daily_loss_points: 0.0
   max_trades_per_day: 8
 filters:
   session_start: 09:15
@@ -35,9 +35,10 @@ filters:
   max_gap_points: 40.0
   min_predicted_body: 0.0
 execution:
-  direction: fade
+  direction: follow
   entry_mode: market_open
   entry_offset_points: 0.0
+  decision: ml
 mt5:
   enabled: false
   symbol: WIN$

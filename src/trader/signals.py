@@ -7,6 +7,7 @@ import pandas as pd
 from trader.config import AppConfig
 from trader.domain import Side, Signal, PredictedCandle
 from trader.ml import CandleRegressor, add_candle_features, add_true_range
+from trader.price_action import last_bar_is_strange, lookback_for_timeframe, side_from_last_candles
 from trader.risk import RiskCalculator
 
 
@@ -42,10 +43,34 @@ class SignalPolicy:
         if pred_c.body < flt.min_predicted_body:
             return Signal(Side.FLAT, 0, 0, 0, "corpo_previsto_curto", pred_c)
 
-        side = Side.BUY if pred_c.close >= float(last["Fechamento"]) else Side.SELL
-        if self.config.execution.direction == "fade":
-            side = side.opposite()
-        entry = float(last["Fechamento"])
+        last_close = float(last["Fechamento"])
+        ml_buy = pred_c.close >= last_close
+        decision = str(getattr(self.config.execution, "decision", "ml") or "ml")
+        lookback = lookback_for_timeframe(self.config.data.timeframe)
+        if decision == "ml_guard":
+            if last_bar_is_strange(featured, lookback=lookback):
+                return Signal(Side.FLAT, 0, 0, 0, "mercado_estranho", pred_c)
+        if decision == "price_action_ml":
+            pa = side_from_last_candles(featured, lookback=lookback)
+            if pa is Side.FLAT:
+                return Signal(Side.FLAT, 0, 0, 0, "sem_padrao_price_action", pred_c)
+            if pa is Side.BUY and not ml_buy:
+                return Signal(Side.FLAT, 0, 0, 0, "ml_nao_confirma_compra", pred_c)
+            if pa is Side.SELL and ml_buy:
+                return Signal(Side.FLAT, 0, 0, 0, "ml_nao_confirma_venda", pred_c)
+            side = pa
+            reason = "price_action_ml_proxima_abertura"
+        else:
+            side = Side.BUY if ml_buy else Side.SELL
+            if self.config.execution.direction == "fade":
+                side = side.opposite()
+            reason = (
+                "seguir_previsao_proxima_abertura"
+                if self.config.execution.direction == "follow"
+                else "fade_proxima_abertura"
+            )
+        # Fill is the next bar's open; stop/gain are planned from the signal close.
+        entry = last_close
         atr = float(last["atr"]) if pd.notna(last.get("atr")) else None
         stop, take = self.risk.levels(side, entry, atr)
         return Signal(
@@ -53,7 +78,7 @@ class SignalPolicy:
             entry=entry,
             stop=stop,
             take=take,
-            reason="seguir_previsao" if self.config.execution.direction == "follow" else "fade",
+            reason=reason,
             predicted=pred_c,
         )
 
