@@ -35,6 +35,37 @@ export type Metrics = {
   trades_per_candle_pct: number
   hourly: Record<string, { trades: number; wins: number; pnl: number }>
   equity: { t: string; bank: number }[]
+  max_contracts?: number
+}
+
+export type YearSlice = {
+  n_trades: number
+  n_wins: number
+  win_rate: number
+  net_pnl: number
+  max_drawdown: number
+  max_drawdown_pct: number
+}
+
+export type PeriodRow = { t: string; pnl: number; n_trades: number; n_wins: number }
+
+export type PeriodExtremes = {
+  best: PeriodRow | null
+  worst: PeriodRow | null
+  avg: number
+  positive_pct: number
+}
+
+export type PeriodBreakdown = {
+  daily: PeriodRow[]
+  weekly: PeriodRow[]
+  monthly: PeriodRow[]
+  summary: {
+    day: PeriodExtremes
+    week: PeriodExtremes
+    month: PeriodExtremes
+    n_days: number
+  }
 }
 
 export type Params = {
@@ -53,12 +84,23 @@ export type Params = {
   mt5: Record<string, number | string | boolean>
 }
 
+export type RunSide = {
+  metrics: Metrics
+  by_year?: Record<string, YearSlice>
+  by_period?: PeriodBreakdown
+  max_contracts?: number
+  contracts_path?: { t: string | null; contracts: number; bank: number }[]
+}
+
 export type Winner = {
   name: string
   params: Params
   score: number
   leakage: Leakage
   metrics: Metrics
+  by_year?: Record<string, YearSlice>
+  by_period?: PeriodBreakdown
+  compound?: RunSide
   trades: {
     side: string
     entry_time: string
@@ -71,6 +113,16 @@ export type Winner = {
   model_test?: { test_direction_hit: number; test_mae_close: number }
 }
 
+export type StudyBlock = {
+  leakage: Leakage
+  model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }
+  n_configs: number
+  n_viable?: number
+  leaderboard: { net_pnl: number; n_trades: number; win_rate: number; profit_factor: number }[]
+}
+
+export type BankKey = '500' | '1000' | '5000'
+
 export type StudyFile = {
   generated_at: string
   disclaimer: string
@@ -78,22 +130,13 @@ export type StudyFile = {
   insights: { worked: string[]; failed: string[]; improve: string[] }
   frozen_configs: string[]
   mt5: { ready: boolean; default_enabled: boolean; steps: string[] }
-  instrument: { name: string; point_value: number; tick: number }
-  winners: { m1: Winner[]; m5: Winner[] }
-  m1: {
-    leakage: Leakage
-    model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }
-    n_configs: number
-    leaderboard: { net_pnl: number; n_trades: number; win_rate: number; profit_factor: number }[]
+  instrument: { name: string; point_value: number; tick: number; contracts?: number }
+  banks: number[]
+  n_configs_total: number
+  timeframes: {
+    m1: { leakage: Leakage; model_test: StudyBlock['model_test'] }
+    m5: { leakage: Leakage; model_test: StudyBlock['model_test'] }
   }
-  m5: {
-    leakage: Leakage
-    model_test: { test_direction_hit: number; test_mae_close: number; test_rmse_close: number }
-    n_configs: number
-  }
-  sanity_m1_extra_file: {
-    leakage: Leakage
-    metrics: Metrics
-    note: string
-  } | null
+  studies: Record<string, { m1: StudyBlock; m5: StudyBlock }>
+  winners: Record<string, { m1: Winner[]; m5: Winner[] }>
 }

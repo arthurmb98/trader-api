@@ -80,6 +80,7 @@ class Trade:
     result: str
     reason: str
     hour: int
+    contracts: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +94,7 @@ class Trade:
             "result": self.result,
             "reason": self.reason,
             "hour": self.hour,
+            "contracts": self.contracts,
         }
 
 
@@ -139,6 +141,8 @@ class StudyMetrics:
     hourly: dict[str, Any] = field(default_factory=dict)
     equity: list[dict[str, Any]] = field(default_factory=list)
     trades: list[dict[str, Any]] = field(default_factory=list)
+    max_contracts: int = 1
+    contracts_path: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

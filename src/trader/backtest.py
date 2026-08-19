@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, time
 
 import numpy as np
@@ -59,6 +60,15 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values))
 
 
+def contracts_for_bank(bank: float, initial_bank: float, cap: int = 16) -> int:
+    """1 at 1×, 2 at 2×, 4 at 4×, 8 at 8×… follows current bank, not martingale."""
+    if initial_bank <= 0 or bank < initial_bank:
+        return 1
+    ratio = bank / initial_bank
+    exp = int(math.floor(math.log2(ratio)))
+    return min(cap, max(1, 2**exp))
+
+
 class BacktestEngine:
     """Walks the TEST frame only. Predictions must already be computed with a frozen model."""
 
@@ -67,23 +77,25 @@ class BacktestEngine:
         self.session = SessionFilter(config)
         self.risk = RiskCalculator(config)
 
-    def run(self, test: pd.DataFrame, predicted: pd.DataFrame) -> StudyMetrics:
+    def run(self, test: pd.DataFrame, predicted: pd.DataFrame, compound: bool = False) -> StudyMetrics:
         acc = self.config.account
         flt = self.config.filters
         exe = self.config.execution
         tick = float(self.config.instrument.tick_size)
-        bank = float(acc.initial_bank)
+        initial_bank = float(acc.initial_bank)
+        bank = initial_bank
         peak = bank
         max_dd = 0.0
-        trades: list[Trade] = []
+        max_contracts = 1
         timestamps: list[datetime] = list(test["timestamp"])
+        contracts_path: list[dict] = [{"t": timestamps[0].isoformat(), "contracts": 1, "bank": bank}]
+        trades: list[Trade] = []
         equity: list[dict] = [{"t": timestamps[0].isoformat(), "bank": bank}]
         position: dict | None = None
         day_key = None
         day_pnl = 0.0
         trades_today = 0
         fade = exe.direction == "fade"
-        daily_loss_money = float(self.config.risk.daily_loss_points) * acc.point_value * acc.contracts
         opens = test["Abertura"].to_numpy(dtype=float)
         highs = test["Máximo"].to_numpy(dtype=float)
         lows = test["Mínimo"].to_numpy(dtype=float)
@@ -102,6 +114,12 @@ class BacktestEngine:
         offset = float(exe.entry_offset_points)
         max_trades = self.config.risk.max_trades_per_day
         use_daily_loss = self.config.risk.daily_loss_points > 0
+        last_logged_contracts = 1
+
+        def size_now() -> int:
+            if compound:
+                return contracts_for_bank(bank, initial_bank)
+            return max(1, int(acc.contracts))
 
         n = len(test)
         for i in range(1, n):
@@ -117,7 +135,7 @@ class BacktestEngine:
                 day_pnl = 0.0
                 trades_today = 0
                 if position is not None:
-                    trades.append(self._close(position, prev_ts, float(prev_close), bank, acc, "fim_do_dia"))
+                    trades.append(self._close(position, prev_ts, float(prev_close), "fim_do_dia"))
                     bank += trades[-1].pnl
                     day_pnl = 0.0
                     position = None
@@ -127,7 +145,7 @@ class BacktestEngine:
                 if exit_price is None and flatten[i]:
                     exit_price, reason = c, "fim_da_sessao"
                 if exit_price is not None:
-                    trade = self._close(position, ts, exit_price, bank, acc, reason)
+                    trade = self._close(position, ts, exit_price, reason)
                     trades.append(trade)
                     bank += trade.pnl
                     day_pnl += trade.pnl
@@ -140,8 +158,10 @@ class BacktestEngine:
                 continue
             if not allowed[i]:
                 continue
-            if bank < max(50.0, acc.contract_cost * acc.contracts + 20.0):
+            n_contracts = size_now()
+            if bank < max(50.0, acc.contract_cost * n_contracts + 20.0):
                 continue
+            daily_loss_money = float(self.config.risk.daily_loss_points) * acc.point_value * n_contracts
             if use_daily_loss and day_pnl <= -abs(daily_loss_money):
                 continue
             if trades_today >= max_trades:
@@ -184,6 +204,10 @@ class BacktestEngine:
                 entry = o
 
             stop, take = self.risk.levels(side, entry, atr)
+            if n_contracts != last_logged_contracts:
+                contracts_path.append({"t": ts.isoformat(), "contracts": n_contracts, "bank": round(bank, 2)})
+                last_logged_contracts = n_contracts
+            max_contracts = max(max_contracts, n_contracts)
             position = {
                 "side": side,
                 "entry": float(entry),
@@ -192,11 +216,12 @@ class BacktestEngine:
                 "time": ts,
                 "hour": ts.hour,
                 "extreme": float(entry),
+                "contracts": n_contracts,
             }
             trades_today += 1
             exit_price, reason = self._manage(position, o, h, l, c)
             if exit_price is not None:
-                trade = self._close(position, ts, exit_price, bank, acc, reason)
+                trade = self._close(position, ts, exit_price, reason)
                 trades.append(trade)
                 bank += trade.pnl
                 day_pnl += trade.pnl
@@ -206,12 +231,15 @@ class BacktestEngine:
                 position = None
 
         if position is not None:
-            trade = self._close(position, timestamps[-1], float(closes[-1]), bank, acc, "fim_dos_dados")
+            trade = self._close(position, timestamps[-1], float(closes[-1]), "fim_dos_dados")
             trades.append(trade)
             bank += trade.pnl
             equity.append({"t": timestamps[-1].isoformat(), "bank": round(bank, 2)})
 
-        return self._metrics(test, trades, equity, acc.initial_bank, bank, max_dd)
+        metrics = self._metrics(test, trades, equity, initial_bank, bank, max_dd)
+        metrics.max_contracts = max_contracts
+        metrics.contracts_path = contracts_path
+        return metrics
 
     def _manage(
         self,
@@ -249,11 +277,13 @@ class BacktestEngine:
             return take, "gain"
         return None, ""
 
-    def _close(self, position: dict, ts: datetime, price: float, bank: float, acc, reason: str) -> Trade:
+    def _close(self, position: dict, ts: datetime, price: float, reason: str) -> Trade:
         side: Side = position["side"]
+        acc = self.config.account
+        n_contracts = int(position.get("contracts") or acc.contracts or 1)
         entry = float(position["entry"])
         points = (price - entry) if side is Side.BUY else (entry - price)
-        pnl = points * acc.point_value * acc.contracts - acc.contract_cost * acc.contracts
+        pnl = points * acc.point_value * n_contracts - acc.contract_cost * n_contracts
         result = "win" if pnl > 0 else "loss"
         return Trade(
             side=side,
@@ -266,6 +296,7 @@ class BacktestEngine:
             result=result,
             reason=reason,
             hour=int(position["hour"]),
+            contracts=n_contracts,
         )
 
     def _metrics(

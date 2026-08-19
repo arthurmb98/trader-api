@@ -45,8 +45,8 @@ class InstrumentConfig:
 
 @dataclass
 class DataConfig:
-    train_csv: str = "datasets/WINJ20_1min.csv"
-    test_csv: str = "datasets/WINM20_1min.csv"
+    train_csv: str = "datasets/WIN_1min_train.csv"
+    test_csv: str = "datasets/WIN_1min_test.csv"
     timeframe: str = "m1"
 
 

@@ -14,7 +14,25 @@ import {
 import { Activity, AlertTriangle, CheckCircle2, Cpu, LineChart, Shield } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { brl, cn, num, pct } from '@/lib/utils'
-import type { StudyFile, Winner } from '@/lib/types'
+import type { BankKey, PeriodRow, StudyFile, Winner } from '@/lib/types'
+
+function stopGainLabel(winner: Winner) {
+  const risk = winner.params.risk
+  const mode = String(risk.mode)
+  const trailing = Boolean(risk.trailing_enabled)
+  if (mode === 'atr') {
+    return {
+      stop: `ATR × ${risk.atr_stop_mult}`,
+      gain: `ATR × ${risk.atr_gain_mult}`,
+      trailing,
+    }
+  }
+  return {
+    stop: `${risk.stop_points} pts`,
+    gain: `${risk.gain_points} pts`,
+    trailing,
+  }
+}
 
 const PARAM_LABELS: Record<string, string> = {
   initial_bank: 'Banca inicial',
@@ -89,8 +107,49 @@ function Kpi({ label, value, hint, positive }: { label: string; value: string; h
   )
 }
 
-function WinnerCard({ winner, title, active, onClick }: { winner: Winner; title: string; active: boolean; onClick: () => void }) {
-  const m = winner.metrics
+function PeriodBars({ title, rows }: { title: string; rows: PeriodRow[] }) {
+  const data = rows.length > 120 ? rows.filter((_, i) => i % Math.ceil(rows.length / 120) === 0) : rows
+  return (
+    <div className="rounded-2xl border border-border bg-elevated/40 p-4">
+      <h3 className="font-display font-semibold">{title}</h3>
+      <div className="mt-4 h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data}>
+            <CartesianGrid stroke="#3a3a3c" strokeDasharray="3 3" />
+            <XAxis dataKey="t" hide />
+            <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
+            <Tooltip
+              contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
+              formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+            />
+            <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+              {data.map((row) => (
+                <Cell key={row.t} fill={row.pnl >= 0 ? '#34d399' : '#fb7185'} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  )
+}
+
+function WinnerCard({
+  winner,
+  title,
+  active,
+  onClick,
+  compound,
+}: {
+  winner: Winner
+  title: string
+  active: boolean
+  onClick: () => void
+  compound: boolean
+}) {
+  const m = compound && winner.compound ? winner.compound.metrics : winner.metrics
+  const sg = stopGainLabel(winner)
+  const y26 = (compound ? winner.compound?.by_year : winner.by_year)?.['2026']
   return (
     <button
       type="button"
@@ -103,9 +162,18 @@ function WinnerCard({ winner, title, active, onClick }: { winner: Winner; title:
       <p className="text-sm text-muted-foreground">{title}</p>
       <p className="mt-1 font-display text-xl font-semibold">{winner.params.name}</p>
       <p className={cn('mt-3 text-3xl font-bold', m.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>{brl(m.net_pnl)}</p>
-      <p className="mt-2 text-sm text-muted-foreground">
+      <p className="mt-2 text-sm text-foreground/90">
+        Stop {sg.stop} · Alvo {sg.gain}
+        {sg.trailing ? ' · trailing' : ''}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
         {m.n_trades} operações · acerto {pct(m.win_rate)} · fator {num(m.profit_factor, 2)}
       </p>
+      {y26 ? (
+        <p className={cn('mt-2 text-xs', y26.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>
+          2026: {brl(y26.net_pnl)}
+        </p>
+      ) : null}
     </button>
   )
 }
@@ -152,7 +220,9 @@ function ParamGrid({ winner }: { winner: Winner }) {
 export function StudyPage() {
   const [data, setData] = useState<StudyFile | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [bank, setBank] = useState<BankKey>('1000')
   const [pick, setPick] = useState<{ tf: 'm1' | 'm5'; i: number }>({ tf: 'm1', i: 0 })
+  const [compound, setCompound] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -161,7 +231,10 @@ export function StudyPage() {
         try {
           const res = await fetch(url)
           if (!res.ok) continue
-          setData((await res.json()) as StudyFile)
+          const json = (await res.json()) as StudyFile
+          setData(json)
+          const first = String(json.banks?.[1] ?? json.banks?.[0] ?? 1000) as BankKey
+          if (json.winners[first]) setBank(first)
           return
         } catch {
           /* try next */
@@ -172,13 +245,14 @@ export function StudyPage() {
     void load()
   }, [])
 
-  const winner = data ? data.winners[pick.tf][pick.i] : undefined
+  const winner = data?.winners[bank]?.[pick.tf]?.[pick.i]
+  const side = compound && winner?.compound ? winner.compound : winner
   const hourly = useMemo(() => {
-    if (!winner) return []
-    return Object.entries(winner.metrics.hourly)
+    if (!side) return []
+    return Object.entries(side.metrics.hourly)
       .map(([hour, v]) => ({ hour: `${hour}h`, ...v }))
       .sort((a, b) => Number(a.hour.replace('h', '')) - Number(b.hour.replace('h', '')))
-  }, [winner])
+  }, [side])
 
   if (error) {
     return (
@@ -188,7 +262,7 @@ export function StudyPage() {
       </main>
     )
   }
-  if (!data || !winner) {
+  if (!data || !winner || !side) {
     return (
       <main className="grid min-h-dvh place-items-center">
         <p className="animate-fade-in text-muted-foreground">Carregando o estudo…</p>
@@ -196,8 +270,15 @@ export function StudyPage() {
     )
   }
 
-  const m = winner.metrics
-  const leak = data.winners.m1[0]?.leakage ?? data.m1.leakage
+  const m = side.metrics
+  const leak = data.timeframes.m1.leakage
+  const tfBlock = data.timeframes[pick.tf]
+  const bankWinners = data.winners[bank]
+  const nConfigsBank = (data.studies[bank]?.m1.n_configs ?? 0) + (data.studies[bank]?.m5.n_configs ?? 0)
+  const years = side.by_year ?? {}
+  const periods = side.by_period
+  const sg = stopGainLabel(winner)
+  const hasCompound = Boolean(winner.compound)
 
   return (
     <div className="relative min-h-dvh">
@@ -220,29 +301,30 @@ export function StudyPage() {
           Um robô que lê o último candle e sugere compra ou venda.
         </h1>
         <p className="mt-5 max-w-2xl animate-fade-up text-lg text-muted-foreground [animation-delay:140ms]">
-          Treinado no mini índice WIN, com banca de R$ 1.000 e 1 contrato. O modelo nunca vê os candles
-          do teste. Abaixo estão os dois melhores de 1 minuto e os dois de 5 minutos.
+          Mini índice WIN$ contínuo. Ranking oficial com 1 contrato. Treino de ago/2021 a dez/2024. Teste de jan/2025 a ago/2026.
+          O modelo nunca vê os candles do teste. Três bancas — duas melhores de 1 min e duas de 5 min em cada uma. Há uma simulação extra que dobra contratos quando a banca dobra.
         </p>
         <div className="mt-8 grid gap-3 sm:grid-cols-3">
           <div className="rounded-2xl border border-border bg-elevated/60 p-4">
             <Cpu className="size-5 text-primary" />
-            <p className="mt-3 font-display font-semibold">Sem cola no teste</p>
+            <p className="mt-3 font-display font-semibold">Parede em 2025</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Treino WINJ20, teste WINM20. {leak.n_removed} linhas repetidas removidas de {leak.n_test_original}.
+              Treino até 31/12/2024, teste a partir de 02/01/2025. {leak.n_removed} candles repetidos
+              removidos de {leak.n_test_original.toLocaleString('pt-BR')}.
             </p>
           </div>
           <div className="rounded-2xl border border-border bg-elevated/60 p-4">
             <LineChart className="size-5 text-violet" />
-            <p className="mt-3 font-display font-semibold">{data.m1.n_configs + data.m5.n_configs} combinações</p>
+            <p className="mt-3 font-display font-semibold">{data.n_configs_total.toLocaleString('pt-BR')} combinações</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Stop fixo, risco/retorno, ATR, trailing, horário-ouro e fade — o ranking ficou só no teste.
+              Stop fixo, risco/retorno, ATR, trailing, horário-ouro e fade — ranking só no teste, com piso de 40 operações e teto de drawdown.
             </p>
           </div>
           <div className="rounded-2xl border border-border bg-elevated/60 p-4">
             <Shield className="size-5 text-pink" />
-            <p className="mt-3 font-display font-semibold">MT5 já desenhado</p>
+            <p className="mt-3 font-display font-semibold">WIN$ contínuo</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Leitura de candle e envio de ordem com stop e alvo. Desligado por padrão até o paper.
+              Não é um vencimento só: há saltos de rolagem. O grid filtra gap grande. MT5 desligado até o paper.
             </p>
           </div>
         </div>
@@ -259,39 +341,78 @@ export function StudyPage() {
           ))}
         </ol>
         <p className="mt-6 rounded-2xl border border-border bg-card/60 p-4 text-sm text-muted-foreground">
-          Ponto do mini índice = {brl(data.instrument.point_value)}. Tick = {data.instrument.tick} pontos. Banca
-          simulada de {brl(m.initial_bank)} com 1 contrato.
+          Ponto do mini índice = {brl(data.instrument.point_value)}. Tick = {data.instrument.tick} pontos. Sempre 1
+          contrato. Banca simulada selecionada: {brl(m.initial_bank)}.
         </p>
       </section>
 
       <section id="setups" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">
-        <h2 className="font-display text-3xl font-bold">Os quatro melhores setups</h2>
+        <h2 className="font-display text-3xl font-bold">As melhores estratégias por banca</h2>
         <p className="mt-2 max-w-2xl text-muted-foreground">
-          Banca inicial de R$ 1.000, 1 contrato. Clique em um card para ver a curva, as médias e cada parâmetro.
+          {nConfigsBank.toLocaleString('pt-BR')} combinações nesta banca. Clique em um card para ver a curva, 2025 vs 2026 e cada parâmetro.
         </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {(data.banks.length ? data.banks : [500, 1000, 5000]).map((value) => {
+            const key = String(value) as BankKey
+            return (
+              <Button
+                key={key}
+                variant={bank === key ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => {
+                  setBank(key)
+                  setPick({ tf: 'm1', i: 0 })
+                }}
+              >
+                {brl(value)}
+              </Button>
+            )
+          })}
+        </div>
+        </div>
+        {hasCompound ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button variant={!compound ? 'default' : 'outline'} size="sm" onClick={() => setCompound(false)}>
+              1 contrato (ranking)
+            </Button>
+            <Button variant={compound ? 'default' : 'outline'} size="sm" onClick={() => setCompound(true)}>
+              Contratos ×2 a cada 2× da banca
+            </Button>
+          </div>
+        ) : null}
+        {compound ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Ilustração de alavancagem: 1 contrato até 2× a banca inicial, 2 até 4×, 4 até 8×, teto 16. Não é o critério do ranking.
+            {m.max_contracts ? ` Chegou a ${m.max_contracts} contratos.` : ''}
+          </p>
+        ) : null}
         <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {data.winners.m1.map((w, i) => (
+          {bankWinners.m1.map((w, i) => (
             <WinnerCard
               key={w.name}
               winner={w}
               title={`1 minuto · ${i === 0 ? 'melhor' : 'segundo melhor'}`}
               active={pick.tf === 'm1' && pick.i === i}
               onClick={() => setPick({ tf: 'm1', i })}
+              compound={compound}
             />
           ))}
-          {data.winners.m5.map((w, i) => (
+          {bankWinners.m5.map((w, i) => (
             <WinnerCard
               key={w.name}
               winner={w}
               title={`5 minutos · ${i === 0 ? 'melhor' : 'segundo melhor'}`}
               active={pick.tf === 'm5' && pick.i === i}
               onClick={() => setPick({ tf: 'm5', i })}
+              compound={compound}
             />
           ))}
         </div>
 
         <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Kpi label="Lucro no teste" value={brl(m.net_pnl)} positive={m.net_pnl >= 0} />
+          <Kpi label="Stop" value={sg.stop} />
+          <Kpi label="Alvo" value={sg.gain} hint={sg.trailing ? 'com trailing' : undefined} />
           <Kpi label="Taxa de acerto" value={pct(m.win_rate)} hint={`${m.n_wins} gains · ${m.n_losses} stops`} />
           <Kpi label="Média / mediana do ganho" value={`${brl(m.avg_win)} · ${brl(m.median_win)}`} positive />
           <Kpi label="Média / mediana da perda" value={`${brl(m.avg_loss)} · ${brl(m.median_loss)}`} positive={false} />
@@ -300,10 +421,50 @@ export function StudyPage() {
           <Kpi label="Banca final" value={brl(m.final_bank)} />
           <Kpi
             label="Acerto de direção do ML"
-            value={pct((pick.tf === 'm1' ? data.m1 : data.m5).model_test.test_direction_hit * 100)}
+            value={pct(tfBlock.model_test.test_direction_hit * 100)}
             hint="Só no arquivo de teste"
           />
         </div>
+
+        <div className="mt-8 grid gap-3 sm:grid-cols-2">
+          {Object.entries(years).map(([year, slice]) => (
+            <div key={year} className="rounded-2xl border border-border bg-elevated/50 p-4">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Robustez · {year}</p>
+              <p className={cn('mt-2 font-display text-2xl font-bold', slice.net_pnl >= 0 ? 'text-gain' : 'text-loss')}>
+                {brl(slice.net_pnl)}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {slice.n_trades} operações · acerto {pct(slice.win_rate)} · tombo {pct(slice.max_drawdown_pct)}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {periods ? (
+          <div className="mt-8 space-y-6">
+            <h3 className="font-display text-2xl font-bold">Ganho e perda por período</h3>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Kpi
+                label="Melhor / pior dia"
+                value={`${brl(periods.summary.day.best?.pnl ?? 0)} · ${brl(periods.summary.day.worst?.pnl ?? 0)}`}
+                hint={`${pct(periods.summary.day.positive_pct)} dos dias no azul · média ${brl(periods.summary.day.avg)}`}
+              />
+              <Kpi
+                label="Melhor / pior semana"
+                value={`${brl(periods.summary.week.best?.pnl ?? 0)} · ${brl(periods.summary.week.worst?.pnl ?? 0)}`}
+                hint={`média ${brl(periods.summary.week.avg)}`}
+              />
+              <Kpi
+                label="Melhor / pior mês"
+                value={`${brl(periods.summary.month.best?.pnl ?? 0)} · ${brl(periods.summary.month.worst?.pnl ?? 0)}`}
+                hint={`média ${brl(periods.summary.month.avg)}`}
+              />
+            </div>
+            <PeriodBars title="Diário" rows={periods.daily} />
+            <PeriodBars title="Semanal" rows={periods.weekly} />
+            <PeriodBars title="Mensal" rows={periods.monthly} />
+          </div>
+        ) : null}
 
         <div className="mt-8 grid gap-6 lg:grid-cols-5">
           <div className="rounded-2xl border border-border bg-elevated/40 p-4 lg:col-span-3">
@@ -408,12 +569,6 @@ export function StudyPage() {
             </ul>
           </div>
         </div>
-        {data.sanity_m1_extra_file ? (
-          <p className="mt-6 text-sm text-muted-foreground">
-            Arquivo extra {data.sanity_m1_extra_file.leakage.test_file}: lucro {brl(data.sanity_m1_extra_file.metrics.net_pnl)}{' '}
-            em {data.sanity_m1_extra_file.metrics.n_trades} operações. {data.sanity_m1_extra_file.note}
-          </p>
-        ) : null}
       </section>
 
       <section id="mt5" className="relative mx-auto max-w-6xl px-5 py-10 sm:px-8">

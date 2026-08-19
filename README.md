@@ -2,12 +2,12 @@
 
 Robô de day trade para o **mini índice (WIN)**: lê o último candle, estima o próximo e sugere compra ou venda, com stop e alvo. Este repositório também gera a **página de apresentação** do estudo de eficácia.
 
-Não é recomendação de investimento. Os números abaixo vêm de dados de 2020 (WINJ20 no treino, WINM20 no teste). Resultado passado não garante resultado futuro.
+Não é recomendação de investimento. Os números vêm do contínuo **WIN$**: treino de ago/2021 a 31/12/2024 e teste de 02/01/2025 a ago/2026. Resultado passado não garante resultado futuro.
 
 ## O que foi corrigido em relação à versão antiga
 
-- O teste **não treina** o modelo. Treino e teste são arquivos diferentes.
-- Qualquer candle do teste que já exista no treino é **removido** (anti-join).
+- O teste **não treina** o modelo. Treino e teste são arquivos diferentes, com parede em 2025.
+- Qualquer candle do teste que já exista no treino (mesmo ativo + timestamp) é **removido**.
 - Os quatro modelos (mínimo/fechamento) não estão mais trocados.
 - High/Low do MetaTrader 5 não estão mais invertidos.
 - A API agora **pode enviar ordem** (`order_send` com SL/TP), não só ler o candle.
@@ -38,9 +38,18 @@ Para API + página juntas (depois do `npm run build` em `web/`):
 PYTHONPATH=src .venv/bin/python -m trader serve
 ```
 
-## Como gerar de novo o estudo (treino real)
+## Como gerar de novo o estudo
 
-O modelo cabe **só** em `datasets/WINJ20_*.csv`. O P&L roda **só** em `datasets/WINM20_1min.csv` (no 5 minutos, esse arquivo é agregado).
+1. Coloque os dumps MT5 em `datasets/WIN$D(M1).csv` e `datasets/WIN$D(M5).csv`.
+2. Separe treino (até 2024) e teste (2025–hoje):
+
+```bash
+PYTHONPATH=src python -m trader prepare-data
+```
+
+Isso grava `datasets/WIN_1min_train.csv`, `WIN_1min_test.csv`, `WIN_5min_train.csv` e `WIN_5min_test.csv`. O 5 minutos é nativo (não é resample do 1 min).
+
+O modelo cabe **só** no treino (até 2024). O P&L roda **só** no teste (2025–hoje). O ranking usa 1 contrato; `python -m trader enrich` (já incluso em `study`) agrega dia/semana/mês e simula contratos em potência de 2.
 
 ```bash
 python3 -m venv .venv
@@ -53,7 +62,7 @@ Isso grava:
 
 - `studies/results/studies.json`
 - `web/public/studies.json` (a página lê daqui)
-- `configs/best_m1_a.yaml`, `best_m1_b.yaml`, `best_m5_a.yaml`, `best_m5_b.yaml`
+- `configs/best_m1_500_a.yaml` … `best_m5_5000_b.yaml` (2 por banca e por timeframe)
 
 ## Ligar o MetaTrader 5
 

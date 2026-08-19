@@ -8,8 +8,8 @@ instrument:
   symbol: WIN$
   tick_size: 5
 data:
-  train_csv: datasets/WINJ20_1min.csv
-  test_csv: datasets/WINM20_1min.csv
+  train_csv: datasets/WIN_1min_train.csv
+  test_csv: datasets/WIN_1min_test.csv
   timeframe: m1
 risk:
   mode: fixed
