@@ -49,11 +49,7 @@ class Mt5Broker(Broker):
         mt5 = self._require()
         return mt5.TIMEFRAME_M5 if timeframe.lower() in {"m5", "5", "5min"} else mt5.TIMEFRAME_M1
 
-    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
-        mt5 = self._require()
-        rates = mt5.copy_rates_from_pos(symbol, self._timeframe(timeframe), 1, max(count, 1))
-        if rates is None or len(rates) == 0:
-            raise RuntimeError(f"copy_rates falhou: {mt5.last_error()}")
+    def _rows_to_candles(self, symbol: str, rates) -> list[Candle]:
         candles: list[Candle] = []
         for row in rates:
             # MT5: time, open, high, low, close, tick_volume, spread, real_volume
@@ -69,6 +65,26 @@ class Mt5Broker(Broker):
                 )
             )
         return candles
+
+    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
+        mt5 = self._require()
+        rates = mt5.copy_rates_from_pos(symbol, self._timeframe(timeframe), 1, max(count, 1))
+        if rates is None or len(rates) == 0:
+            raise RuntimeError(f"copy_rates falhou: {mt5.last_error()}")
+        return self._rows_to_candles(symbol, rates)
+
+    def copy_rates_range(
+        self,
+        symbol: str,
+        timeframe: str,
+        date_from: datetime,
+        date_to: datetime,
+    ) -> list[Candle]:
+        mt5 = self._require()
+        rates = mt5.copy_rates_range(symbol, self._timeframe(timeframe), date_from, date_to)
+        if rates is None or len(rates) == 0:
+            raise RuntimeError(f"copy_rates_range falhou: {mt5.last_error()}")
+        return self._rows_to_candles(symbol, rates)
 
     def _filling_const(self) -> int:
         mt5 = self._require()

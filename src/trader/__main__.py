@@ -11,6 +11,16 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("study", help="Treina no CSV A, testa no CSV B, varre parâmetros")
     sub.add_parser("enrich", help="Agrega períodos e simula contratos compostos nos vencedores")
     sub.add_parser("rerank", help="Reescolhe vencedores com piso de DD < banca e gera o parecer")
+    replay = sub.add_parser(
+        "replay",
+        help="Simula uma janela (padrão: 17–21/08/2026) com a config vencedora M5, sem enviar ordem",
+    )
+    replay.add_argument("--config", default="best_candles_m5_1000_a")
+    replay.add_argument("--from", dest="start", default="2026-08-17")
+    replay.add_argument("--to", dest="end", default="2026-08-21")
+    replay.add_argument("--csv", default="datasets/mt5_m5_week.csv")
+    replay.add_argument("--source", choices=("csv", "mt5", "auto"), default="csv")
+    replay.add_argument("--warmup-days", type=int, default=5)
     serve = sub.add_parser("serve", help="Sobe a API FastAPI")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -35,6 +45,11 @@ def main(argv: list[str] | None = None) -> None:
         from trader.study import rerank_saved_study
 
         rerank_saved_study()
+        return
+    if args.cmd == "replay":
+        from trader.replay import replay_from_args
+
+        replay_from_args(args)
         return
     if args.cmd == "serve":
         import uvicorn

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from trader.domain import LeakageReport
+from trader.domain import Candle, LeakageReport
 from trader.paths import DATASETS_DIR, ROOT
 
 OHLC = ["Abertura", "Máximo", "Mínimo", "Fechamento"]
@@ -23,7 +23,7 @@ SPLIT_FILES = {
 
 def _read_raw(path: Path) -> pd.DataFrame:
     last_error: Exception | None = None
-    for sep in (",", ";"):
+    for sep in (",", ";", "\t"):
         for encoding in ("utf-8", "latin-1"):
             try:
                 df = pd.read_csv(path, sep=sep, encoding=encoding)
@@ -37,11 +37,31 @@ def _read_raw(path: Path) -> pd.DataFrame:
 
 def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [c.strip() for c in df.columns]
+    df.columns = [c.strip().strip("<>").strip() for c in df.columns]
     lower = {c.lower(): c for c in df.columns}
     required_pt = {"Ativo", "Data", "Hora", *OHLC}
     if required_pt <= set(df.columns):
         return df
+    if {"date", "time", "open", "high", "low", "close"} <= set(lower):
+        out = pd.DataFrame()
+        out["timestamp"] = pd.to_datetime(
+            df[lower["date"]].astype(str).str.strip() + " " + df[lower["time"]].astype(str).str.strip(),
+            errors="coerce",
+        )
+        out["Ativo"] = "WIN$"
+        out["Data"] = out["timestamp"].dt.strftime("%d/%m/%Y")
+        out["Hora"] = out["timestamp"].dt.strftime("%H:%M:%S")
+        for en, pt in EN_OHLC.items():
+            out[pt] = pd.to_numeric(df[lower[en]], errors="coerce")
+        if "vol" in lower:
+            out["Volume"] = pd.to_numeric(df[lower["vol"]], errors="coerce")
+        elif "tickvol" in lower:
+            out["Volume"] = pd.to_numeric(df[lower["tickvol"]], errors="coerce")
+        elif "tick_volume" in lower:
+            out["Volume"] = pd.to_numeric(df[lower["tick_volume"]], errors="coerce")
+        else:
+            out["Volume"] = 0.0
+        return out
     if {"time", "open", "high", "low", "close"} <= set(lower):
         out = pd.DataFrame()
         out["timestamp"] = pd.to_datetime(df[lower["time"]], errors="coerce")
@@ -58,6 +78,31 @@ def _normalize_schema(df: pd.DataFrame) -> pd.DataFrame:
             out["Volume"] = 0.0
         return out
     raise ValueError(f"CSV sem colunas reconhecidas: {list(df.columns)}")
+
+
+def frame_from_candles(candles: list[Candle], source_file: str = "mt5") -> pd.DataFrame:
+    if not candles:
+        return pd.DataFrame(columns=["Ativo", "Data", "Hora", *OHLC, "Volume", "timestamp", "source_file"])
+    rows = []
+    for c in candles:
+        ts = pd.Timestamp(c.timestamp).to_pydatetime()
+        if ts.tzinfo is not None:
+            ts = ts.replace(tzinfo=None)
+        rows.append(
+            {
+                "Ativo": c.symbol,
+                "Data": ts.strftime("%d/%m/%Y"),
+                "Hora": ts.strftime("%H:%M:%S"),
+                "Abertura": c.open,
+                "Máximo": c.high,
+                "Mínimo": c.low,
+                "Fechamento": c.close,
+                "Volume": c.volume,
+                "timestamp": ts,
+                "source_file": source_file,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def load_candles(path: str | Path) -> pd.DataFrame:

@@ -428,6 +428,9 @@ export function StudyPage() {
       <header className="relative mx-auto flex max-w-6xl items-center justify-between px-5 py-6 sm:px-8">
         <p className="font-display text-lg font-bold">Sinal WIN</p>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" asChild>
+            <a href="/live">Ao vivo</a>
+          </Button>
           <Button variant="outline" size="sm" onClick={() => document.getElementById('parecer')?.scrollIntoView()}>
             Comparar
           </Button>

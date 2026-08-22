@@ -64,6 +64,32 @@ Isso grava:
 - `web/public/studies.json` (a página lê daqui)
 - `configs/best_m1_500_a.yaml` … `best_m5_5000_b.yaml` (2 por banca e por timeframe)
 
+## Replay da última semana (sem enviar ordem)
+
+Usa a melhor setup de **últimos candles · 5 min · R$ 1000** (`best_candles_m5_1000_a`): ML + guarda de mercado estranho, follow 100/200, trailing, horário de ouro, 1 mini.
+
+O Python `MetaTrader5` **não roda no macOS**. Neste Mac, o terminal só exporta o histórico; o replay roda no Python.
+
+1. No MT5, logado na demo com **WIN$** (ou o vencimento) no Market Watch.
+2. Gráfico M5 → clique direito → Exportar / Salvar como CSV, de ~10/08 até 21/08/2026.
+3. Salve em `datasets/mt5_m5_week.csv`.
+4. Alternativa: compile `mt5/ExportM5Week.mq5` no MetaEditor, rode no gráfico M5 e copie o CSV de `MQL5/Files` para `datasets/mt5_m5_week.csv`.
+
+```bash
+PYTHONPATH=src python -m trader replay \
+  --config best_candles_m5_1000_a \
+  --from 2026-08-17 --to 2026-08-21 \
+  --csv datasets/mt5_m5_week.csv
+```
+
+No **Windows**, com o terminal aberto, dá para pular o CSV:
+
+```bash
+PYTHONPATH=src python -m trader replay --source mt5
+```
+
+Se `datasets/mt5_m5_week.csv` não existir, o comando avisa e tenta `datasets/WIN_5min_test.csv` (pode faltar o fim da semana).
+
 ## Ligar o MetaTrader 5
 
 1. Windows com o terminal MT5 aberto e algo trading autorizado.

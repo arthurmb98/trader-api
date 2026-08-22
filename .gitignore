@@ -10,3 +10,4 @@ web/dist/
 .mypy_cache/
 .vercel
 datasets/WIN$D*.csv
+studies/results/live_session.json

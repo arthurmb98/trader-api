@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -47,6 +48,12 @@ class OrderRequest(BaseModel):
     volume: float = Field(default=1.0, gt=0)
 
 
+class LiveStart(BaseModel):
+    config: str = "best_candles_m5_1000_a"
+    source: str = "paper"
+    interval_sec: float = Field(default=0.001, ge=0.0, le=600.0)
+
+
 def _load_named_config(name: str) -> AppConfig:
     path = CONFIGS_DIR / f"{name}.yaml"
     if not path.exists():
@@ -66,10 +73,18 @@ def _load_model(timeframe: str) -> CandleRegressor:
 
 
 def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        from trader.live import ENGINE
+
+        ENGINE.stop()
+
     app = FastAPI(
         title="Trader API",
         description="Sinais de day trade no mini índice (WIN) + estudo de eficácia.",
         version="2.0.0",
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -182,6 +197,37 @@ def create_app() -> FastAPI:
         sig = Signal(side=side, entry=body.entry or 0, stop=body.stop, take=body.take, reason="manual")
         return _send(cfg, sig)
 
+    @app.get("/api/live")
+    def live_status() -> dict[str, Any]:
+        from trader.live import ENGINE
+
+        return ENGINE.snapshot()
+
+    @app.post("/api/live/start")
+    async def live_start(body: LiveStart) -> dict[str, Any]:
+        from trader.live import ENGINE
+
+        if body.source not in {"paper", "mt5"}:
+            raise HTTPException(400, "source deve ser paper ou mt5")
+        try:
+            return await ENGINE.start(body.config, body.source, body.interval_sec)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/live/stop")
+    def live_stop() -> dict[str, Any]:
+        from trader.live import ENGINE
+
+        ENGINE.stop()
+        return ENGINE.snapshot()
+
+    @app.post("/api/live/reset")
+    def live_reset() -> dict[str, Any]:
+        from trader.live import ENGINE
+
+        ENGINE.reset()
+        return ENGINE.snapshot()
+
     def _send(cfg: AppConfig, sig) -> dict[str, Any]:
         broker = Mt5Broker(
             cfg.mt5.symbol, cfg.mt5.magic, cfg.mt5.deviation, cfg.mt5.filling, cfg.mt5.comment
@@ -207,6 +253,10 @@ def create_app() -> FastAPI:
 
         @app.get("/")
         def index() -> FileResponse:
+            return FileResponse(WEB_DIST / "index.html")
+
+        @app.get("/live")
+        def live_page() -> FileResponse:
             return FileResponse(WEB_DIST / "index.html")
 
     else:
