@@ -4,6 +4,12 @@
   "installCommand": "npm --prefix web install",
   "buildCommand": "npm --prefix web run build",
   "outputDirectory": "web/dist",
+  "functions": {
+    "api/live/**/*.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
+    }
+  },
   "rewrites": [
     { "source": "/favicon.ico", "destination": "/brand/logo-branco.png" },
     { "source": "/live", "destination": "/index.html" },

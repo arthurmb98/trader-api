@@ -13,8 +13,10 @@ from trader.broker import Mt5Broker
 from trader.config import AppConfig
 from trader.data import frame_from_candles, load_candles
 from trader.domain import Side, Signal, Trade
+from trader.ml import add_candle_features, add_true_range
 from trader.paths import DATASETS_DIR, RESULTS_DIR
-from trader.replay import ensure_model, load_named_config
+from trader.price_action import lookback_for_timeframe, strange_from_frame
+from trader.replay import ensure_model, load_named_config, slice_week
 from trader.signals import SignalPolicy, overlay_config
 
 SESSION_PATH = RESULTS_DIR / "live_session.json"
@@ -350,6 +352,198 @@ def live_period_stats(
     }
 
 
+def empty_live_snapshot() -> dict[str, Any]:
+    return {
+        "running": False,
+        "done": False,
+        "error": None,
+        "config": DEFAULT_CONFIG,
+        "case": DEFAULT_CASE,
+        "timeframe": DEFAULT_TIMEFRAME,
+        "source": "paper",
+        "interval_sec": DEFAULT_INTERVAL_SEC,
+        "window_start": None,
+        "window_end": None,
+        "start": None,
+        "end": None,
+        "last_tick": None,
+        "last_bar_time": None,
+        "cursor": 0,
+        "n_bars": 0,
+        "initial_bank": DEFAULT_BANK,
+        "bank": DEFAULT_BANK,
+        "net_pnl": 0.0,
+        "today_pnl": 0.0,
+        "avg_daily": 0.0,
+        "n_days": 0,
+        "n_trades": 0,
+        "n_wins": 0,
+        "win_rate": 0.0,
+        "max_drawdown": 0.0,
+        "max_drawdown_pct": 0.0,
+        "contracts": 1,
+        "max_contracts": 1,
+        "signal": None,
+        "position": None,
+        "trades": [],
+        "equity": [],
+        "daily": [],
+        "periods": live_period_stats([], None, None),
+        "signals": [],
+        "candles": [],
+    }
+
+
+def snapshot_from_metrics(
+    metrics,
+    cfg: AppConfig,
+    config_name: str,
+    case: str,
+    timeframe: str,
+    window_start: date,
+    window_end: date,
+    interval_sec: float,
+    week: pd.DataFrame,
+) -> dict[str, Any]:
+    trades = list(metrics.trades or [])
+    periods = live_period_stats(trades, window_start, window_end)
+    daily: dict[str, float] = {}
+    for trade in trades:
+        key = str(trade.get("exit_time") or "")[:10]
+        if not key:
+            continue
+        daily[key] = round(daily.get(key, 0.0) + float(trade.get("pnl") or 0), 2)
+    daily_rows = [{"t": key, "pnl": value} for key, value in sorted(daily.items())]
+    today_key = daily_rows[-1]["t"] if daily_rows else ""
+    today_pnl = daily.get(today_key, 0.0)
+    last_trade = trades[-1] if trades else None
+    signal = None
+    if last_trade:
+        signal = {
+            "side": last_trade.get("side") or "FLAT",
+            "entry": float(last_trade.get("entry") or 0),
+            "stop": 0,
+            "take": 0,
+            "reason": str(last_trade.get("reason") or ""),
+            "predicted": None,
+        }
+    candles = []
+    if week is not None and not week.empty:
+        tail = week.tail(60)
+        candles = [
+            {
+                "t": pd.Timestamp(row["timestamp"]).isoformat(),
+                "open": float(row["Abertura"]),
+                "high": float(row["Máximo"]),
+                "low": float(row["Mínimo"]),
+                "close": float(row["Fechamento"]),
+            }
+            for _, row in tail.iterrows()
+        ]
+    last_bar = None
+    if week is not None and not week.empty:
+        last_bar = pd.Timestamp(week.iloc[-1]["timestamp"]).isoformat()
+    n_days = len(daily)
+    avg_daily = float((periods.get("avg") or {}).get("daily", {}).get("avg") or 0.0)
+    return {
+        "running": False,
+        "done": True,
+        "error": None,
+        "config": config_name,
+        "case": case,
+        "timeframe": timeframe,
+        "source": "paper",
+        "interval_sec": interval_sec,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "start": window_start.isoformat(),
+        "end": window_end.isoformat(),
+        "last_tick": datetime.now().isoformat(timespec="seconds"),
+        "last_bar_time": last_bar,
+        "cursor": 0 if week is None else max(0, len(week) - 1),
+        "n_bars": 0 if week is None else int(len(week)),
+        "initial_bank": round(float(metrics.initial_bank), 2),
+        "bank": round(float(metrics.final_bank), 2),
+        "net_pnl": round(float(metrics.net_pnl), 2),
+        "today_pnl": round(today_pnl, 2),
+        "avg_daily": avg_daily,
+        "n_days": n_days,
+        "n_trades": int(metrics.n_trades),
+        "n_wins": int(metrics.n_wins),
+        "win_rate": round(float(metrics.win_rate), 1),
+        "max_drawdown": round(float(metrics.max_drawdown), 2),
+        "max_drawdown_pct": round(float(metrics.max_drawdown_pct), 1),
+        "contracts": contracts_for_bank(float(metrics.final_bank), float(metrics.initial_bank))
+        if metrics.initial_bank
+        else 1,
+        "max_contracts": int(getattr(metrics, "max_contracts", 1) or 1),
+        "signal": signal,
+        "position": None,
+        "trades": list(reversed(trades[-80:])),
+        "equity": list(metrics.equity[-400:] if metrics.equity else []),
+        "daily": daily_rows,
+        "periods": periods,
+        "signals": [],
+        "candles": candles,
+    }
+
+
+def paper_batch_snapshot(
+    case: str,
+    timeframe: str,
+    initial_bank: float,
+    start: str | None,
+    end: str | None,
+    interval_sec: float = DEFAULT_INTERVAL_SEC,
+) -> dict[str, Any]:
+    case, timeframe, bank, window_start, window_end = validate_live_params(
+        case,
+        timeframe,
+        initial_bank,
+        "paper",
+        parse_day(start),
+        parse_day(end),
+    )
+    if window_start is None or window_end is None:
+        raise ValueError("Janela de datas obrigatória no paper.")
+    name, cfg = resolve_live_config(case, timeframe, bank)
+    path = test_csv_for(timeframe)
+    if not path.exists():
+        path = cfg.resolve_csv(cfg.data.test_csv)
+    full = load_candles(path)
+    sliced, _cursor = slice_paper_frame(full, window_start, window_end)
+    model = ensure_model(cfg.data.timeframe, cfg.resolve_csv(cfg.data.train_csv))
+    featured = add_true_range(add_candle_features(sliced), cfg.risk.atr_period)
+    predicted = model.predict_next_ohlc(featured)
+    lookback = lookback_for_timeframe(cfg.data.timeframe)
+    strange = strange_from_frame(featured, lookback=lookback)
+    week, week_pred, week_strange = slice_week(
+        featured,
+        predicted,
+        strange,
+        pd.Timestamp(window_start),
+        pd.Timestamp(window_end),
+    )
+    use_guard = str(getattr(cfg.execution, "decision", "ml") or "ml") == "ml_guard"
+    metrics = BacktestEngine(cfg).run(
+        week,
+        week_pred,
+        compound=False,
+        strange_mask=week_strange if use_guard else None,
+    )
+    return snapshot_from_metrics(
+        metrics,
+        cfg,
+        name,
+        case,
+        timeframe,
+        window_start,
+        window_end,
+        float(interval_sec),
+        week,
+    )
+
+
 class LiveEngine:
     """Paper (or MT5-data) walk-forward session. Never sends orders."""
 
@@ -389,8 +583,15 @@ class LiveEngine:
         self._policy: SignalPolicy | None = None
         self._bt: BacktestEngine | None = None
         self._session: SessionFilter | None = None
+        self._batch_snap: dict[str, Any] | None = None
 
     def snapshot(self) -> dict[str, Any]:
+        if self._batch_snap is not None and not self.running:
+            packed = dict(self._batch_snap)
+            packed["running"] = False
+            packed["done"] = self.done
+            packed["error"] = self.error
+            return packed
         wins = [t for t in self.trades if t.get("result") == "win"]
         n = len(self.trades)
         days = {str(t.get("exit_time", ""))[:10] for t in self.trades if t.get("exit_time")}
@@ -544,6 +745,7 @@ class LiveEngine:
         self._policy = None
         self._bt = None
         self._session = None
+        self._batch_snap = None
         if SESSION_PATH.exists():
             SESSION_PATH.unlink()
 
@@ -803,6 +1005,15 @@ class LiveEngine:
             self.window_end = window_end
             self.done = False
             self.error = None
+            self._batch_snap = None
+            if source == "paper":
+                snap = paper_batch_snapshot(case, timeframe, bank, start, end, interval_sec)
+                self._batch_snap = snap
+                self.done = True
+                self.running = False
+                self.initial_bank = float(snap["initial_bank"])
+                self.bank = float(snap["bank"])
+                return snap
             self._prepare_runtime(reset_cursor=True)
             self.running = True
             loop = asyncio.get_running_loop()
@@ -810,5 +1021,12 @@ class LiveEngine:
             return self.snapshot()
 
 
-ENGINE = LiveEngine()
-ENGINE.load_saved()
+ENGINE: LiveEngine | None = None
+
+
+def get_engine() -> LiveEngine:
+    global ENGINE
+    if ENGINE is None:
+        ENGINE = LiveEngine()
+        ENGINE.load_saved()
+    return ENGINE

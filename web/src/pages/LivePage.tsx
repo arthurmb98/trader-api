@@ -14,7 +14,7 @@ import {
   YAxis,
 } from 'recharts'
 import { Button } from '@/components/ui/button'
-import { brl, cn, pct } from '@/lib/utils'
+import { brl, cn, pct, readJson } from '@/lib/utils'
 
 type SignalSnap = {
   side: string
@@ -358,9 +358,10 @@ export function LivePage() {
       try {
         const res = await fetch(`/api/live/meta?timeframe=${timeframe}`, { cache: 'no-store' })
         if (!res.ok) throw new Error('fail')
-        const json = (await res.json()) as LiveMeta
+        const json = await readJson<LiveMeta>(res)
         if (!alive) return
         setMeta(json)
+        setOffline(false)
         setStart((prev) => prev || json.default_start)
         setEnd((prev) => prev || json.default_end)
       } catch {
@@ -379,10 +380,15 @@ export function LivePage() {
     const pull = async () => {
       try {
         const res = await fetch('/api/live', { cache: 'no-store' })
-        if (!res.ok) throw new Error('fail')
-        const json = (await res.json()) as LiveSnap
+        if (!res.ok) return
+        const json = await readJson<LiveSnap>(res)
         if (!alive) return
-        setSnap(json)
+        setSnap((prev) => {
+          if ((prev.done || prev.n_trades > 0) && !json.running && !(json.n_trades > 0)) {
+            return prev
+          }
+          return json
+        })
         setOffline(false)
         if (json.source === 'paper' || json.source === 'mt5') setSource(json.source)
         if (json.interval_sec) setIntervalSec(json.interval_sec)
@@ -397,16 +403,30 @@ export function LivePage() {
           if (to) setEnd(to)
         }
       } catch {
-        if (alive) setOffline(true)
+        /* paper batch does not need a persistent GET */
       }
     }
     void pull()
-    const id = window.setInterval(pull, 1000)
     return () => {
       alive = false
-      window.clearInterval(id)
     }
   }, [])
+
+  useEffect(() => {
+    if (!snap.running) return
+    const id = window.setInterval(async () => {
+      try {
+        const res = await fetch('/api/live', { cache: 'no-store' })
+        if (!res.ok) return
+        const json = await readJson<LiveSnap>(res)
+        setSnap(json)
+        setOffline(false)
+      } catch {
+        setOffline(true)
+      }
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [snap.running])
 
   const post = async (path: string, body?: object) => {
     setBusy(true)
@@ -416,7 +436,7 @@ export function LivePage() {
         headers: { 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : undefined,
       })
-      const json = (await res.json()) as LiveSnap & { detail?: string }
+      const json = await readJson<LiveSnap & { detail?: string }>(res)
       if (!res.ok) throw new Error(typeof json.detail === 'string' ? json.detail : 'falhou')
       setSnap(json)
       setOffline(false)
@@ -485,13 +505,15 @@ export function LivePage() {
       ? `Janela ${dayLabel(start)} → ${dayLabel(end)}`
       : 'MT5 ao vivo (sem janela de CSV)'
 
-  const status = offline
-    ? 'API offline — suba python -m trader serve'
-    : snap.running
-      ? 'Operando (paper, sem ordem no MT5)'
-      : snap.done
-        ? 'Fim dos candles da sessão'
-        : 'Pausado'
+  const status = offline && !snap.done
+    ? 'API offline — no Vercel o Iniciar chama a simulação paper; localmente use python -m trader serve'
+    : busy
+      ? 'Simulando a janela…'
+      : snap.running
+        ? 'Operando (paper, sem ordem no MT5)'
+        : snap.done
+          ? 'Simulação da janela concluída'
+          : 'Pausado'
 
   return (
     <div className="relative min-h-dvh">
@@ -609,7 +631,7 @@ export function LivePage() {
                 })
               }
             >
-              Iniciar
+              Iniciar{busy ? '…' : ''}
             </Button>
             <Button variant="outline" size="sm" disabled={busy || !snap.running} onClick={() => void post('/api/live/stop')}>
               Pausar

@@ -82,7 +82,8 @@ def create_app() -> FastAPI:
         yield
         from trader.live import ENGINE
 
-        ENGINE.stop()
+        if ENGINE is not None:
+            ENGINE.stop()
 
     app = FastAPI(
         title="Trader API",
@@ -212,16 +213,16 @@ def create_app() -> FastAPI:
 
     @app.get("/api/live")
     def live_status() -> dict[str, Any]:
-        from trader.live import ENGINE
+        from trader.live import get_engine
 
-        return ENGINE.snapshot()
+        return get_engine().snapshot()
 
     @app.post("/api/live/start")
     async def live_start(body: LiveStart) -> dict[str, Any]:
-        from trader.live import ENGINE
+        from trader.live import get_engine
 
         try:
-            return await ENGINE.start(
+            return await get_engine().start(
                 case=body.case,
                 timeframe=body.timeframe,
                 initial_bank=body.initial_bank,
@@ -235,17 +236,17 @@ def create_app() -> FastAPI:
 
     @app.post("/api/live/stop")
     def live_stop() -> dict[str, Any]:
-        from trader.live import ENGINE
+        from trader.live import get_engine
 
-        ENGINE.stop()
-        return ENGINE.snapshot()
+        get_engine().stop()
+        return get_engine().snapshot()
 
     @app.post("/api/live/reset")
     def live_reset() -> dict[str, Any]:
-        from trader.live import ENGINE
+        from trader.live import get_engine
 
-        ENGINE.reset()
-        return ENGINE.snapshot()
+        get_engine().reset()
+        return get_engine().snapshot()
 
     def _send(cfg: AppConfig, sig) -> dict[str, Any]:
         broker = Mt5Broker(

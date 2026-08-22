@@ -16,3 +16,13 @@ export function pct(value: number, digits = 1) {
 export function num(value: number, digits = 1) {
   return value.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
 }
+
+export async function readJson<T>(res: Response): Promise<T> {
+  const text = await res.text()
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    const hint = res.status === 404 ? 'API do paper não está neste host.' : `HTTP ${res.status}`
+    throw new Error(hint)
+  }
+}
