@@ -21,6 +21,7 @@ class handler(JsonHandler):
                 start=body.get("start"),
                 end=body.get("end"),
                 interval_sec=float(body.get("interval_sec") or 0.001),
+                lot=str(body.get("lot") or "fixed"),
             )
             self.send_json(200, snap)
         except Exception as exc:  # noqa: BLE001

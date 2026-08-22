@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Area,
   AreaChart,
@@ -40,6 +40,7 @@ type TradeSnap = {
 
 type CaseKey = 'last_candle' | 'last_candles'
 type TfKey = 'm1' | 'm5'
+type LotKey = 'fixed' | 'scaled'
 
 type LiveSnap = {
   running: boolean
@@ -59,6 +60,7 @@ type LiveSnap = {
   cursor: number
   n_bars: number
   initial_bank: number
+  lot?: LotKey | string
   bank: number
   net_pnl: number
   today_pnl: number
@@ -117,6 +119,8 @@ type LiveMeta = {
   default_start: string
   default_end: string
   max_span_months: number
+  lots?: { key: LotKey; label: string }[]
+  lot?: LotKey
 }
 
 const EMPTY: LiveSnap = {
@@ -131,6 +135,7 @@ const EMPTY: LiveSnap = {
   cursor: 0,
   n_bars: 0,
   initial_bank: 1000,
+  lot: 'fixed',
   bank: 1000,
   net_pnl: 0,
   today_pnl: 0,
@@ -198,6 +203,10 @@ const CASE_LABEL: Record<CaseKey, string> = {
   last_candles: 'Últimos candles',
 }
 const TF_LABEL: Record<TfKey, string> = { m1: '1 min', m5: '5 min' }
+const LOT_LABEL: Record<LotKey, string> = {
+  fixed: '1 contrato',
+  scaled: 'Crescente / R$ 1.000',
+}
 const FALLBACK_BANKS = [500, 1000, 2000, 3000, 5000, 10000, 15000]
 const selectClass = 'h-9 rounded-lg border border-border bg-elevated/60 px-3 text-sm'
 const PERIOD_LABEL: Record<PeriodLevel, string> = {
@@ -219,6 +228,19 @@ function asCase(value: string | undefined | null): CaseKey {
 
 function asTf(value: string | undefined | null): TfKey {
   return value === 'm1' ? 'm1' : 'm5'
+}
+
+function asLot(value: string | undefined | null): LotKey {
+  return value === 'scaled' ? 'scaled' : 'fixed'
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex min-w-0 flex-col justify-end gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+      {label}
+      {children}
+    </label>
+  )
 }
 
 function clientLevels(start: string, end: string): PeriodLevel[] {
@@ -348,6 +370,7 @@ export function LivePage() {
   const [caseKey, setCaseKey] = useState<CaseKey>('last_candles')
   const [timeframe, setTimeframe] = useState<TfKey>('m5')
   const [bank, setBank] = useState(1000)
+  const [lot, setLot] = useState<LotKey>('fixed')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [meta, setMeta] = useState<LiveMeta | null>(null)
@@ -397,6 +420,7 @@ export function LivePage() {
           if (json.case) setCaseKey(asCase(json.case))
           if (json.timeframe) setTimeframe(asTf(json.timeframe))
           if (json.initial_bank) setBank(Number(json.initial_bank))
+          if (json.lot) setLot(asLot(json.lot))
           const from = (json.start || json.window_start || '').slice(0, 10)
           const to = (json.end || json.window_end || '').slice(0, 10)
           if (from) setStart(from)
@@ -529,16 +553,13 @@ export function LivePage() {
 
       <section className="relative mx-auto max-w-6xl px-5 pb-4 sm:px-8">
         <p className="text-sm uppercase tracking-[0.2em] text-primary">Ao vivo · local</p>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="font-display text-4xl font-bold">Sinais e ordens</h1>
-            <p className="mt-2 max-w-xl text-muted-foreground">
-              {status}. {CASE_LABEL[caseKey]} · {TF_LABEL[timeframe]}. Lote sobe 1 mini a cada{' '}
-              {brl(snap.initial_bank || bank)}. {windowText}
-              {snap.last_bar_time ? ` · candle ${clock(snap.last_bar_time)}` : ''}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+        <h1 className="mt-3 font-display text-4xl font-bold">Sinais e ordens</h1>
+        <p className="mt-2 max-w-3xl text-muted-foreground">
+          {status}. {CASE_LABEL[caseKey]} · {TF_LABEL[timeframe]} · {LOT_LABEL[lot]}. {windowText}
+          {snap.last_bar_time ? ` · candle ${clock(snap.last_bar_time)}` : ''}
+        </p>
+        <div className="mt-4 flex flex-wrap items-end gap-2">
+          <Field label="Caso">
             <select
               className={selectClass}
               value={caseKey}
@@ -548,6 +569,8 @@ export function LivePage() {
               <option value="last_candles">Últimos candles</option>
               <option value="last_candle">Último candle</option>
             </select>
+          </Field>
+          <Field label="Banca">
             <select
               className={selectClass}
               value={bank}
@@ -560,6 +583,19 @@ export function LivePage() {
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Lote">
+            <select
+              className={selectClass}
+              value={lot}
+              onChange={(e) => setLot(asLot(e.target.value))}
+              disabled={locked}
+            >
+              <option value="fixed">1 contrato</option>
+              <option value="scaled">Crescente / R$ 1.000</option>
+            </select>
+          </Field>
+          <Field label="Gráfico">
             <select
               className={selectClass}
               value={timeframe}
@@ -569,34 +605,34 @@ export function LivePage() {
               <option value="m5">5 min</option>
               <option value="m1">1 min</option>
             </select>
-            <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-              De
-              <input
-                type="date"
-                className={selectClass}
-                value={start}
-                min={rangeMin}
-                max={startMax || undefined}
-                disabled={locked || source === 'mt5'}
-                onChange={(e) => {
-                  const next = e.target.value
-                  setStart(next)
-                  if (next && end && end < next) setEnd(next)
-                }}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-              Até
-              <input
-                type="date"
-                className={selectClass}
-                value={end}
-                min={endMin}
-                max={endMax || undefined}
-                disabled={locked || source === 'mt5'}
-                onChange={(e) => setEnd(e.target.value)}
-              />
-            </label>
+          </Field>
+          <Field label="De">
+            <input
+              type="date"
+              className={selectClass}
+              value={start}
+              min={rangeMin}
+              max={startMax || undefined}
+              disabled={locked || source === 'mt5'}
+              onChange={(e) => {
+                const next = e.target.value
+                setStart(next)
+                if (next && end && end < next) setEnd(next)
+              }}
+            />
+          </Field>
+          <Field label="Até">
+            <input
+              type="date"
+              className={selectClass}
+              value={end}
+              min={endMin}
+              max={endMax || undefined}
+              disabled={locked || source === 'mt5'}
+              onChange={(e) => setEnd(e.target.value)}
+            />
+          </Field>
+          <Field label="Fonte">
             <select
               className={selectClass}
               value={source}
@@ -606,6 +642,8 @@ export function LivePage() {
               <option value="paper">Paper (CSV)</option>
               <option value="mt5">MT5 (Windows)</option>
             </select>
+          </Field>
+          <Field label="Velocidade">
             <select
               className={selectClass}
               value={intervalSec}
@@ -616,6 +654,8 @@ export function LivePage() {
               <option value={1}>1 s / candle</option>
               <option value={300}>5 min (relógio)</option>
             </select>
+          </Field>
+          <div className="flex h-9 items-center gap-2">
             <Button
               size="sm"
               disabled={busy || snap.running || Boolean(dateError)}
@@ -624,6 +664,7 @@ export function LivePage() {
                   case: caseKey,
                   timeframe,
                   initial_bank: bank,
+                  lot,
                   start: source === 'paper' ? start : undefined,
                   end: source === 'paper' ? end : undefined,
                   source,
@@ -646,7 +687,15 @@ export function LivePage() {
       </section>
 
       <section className="relative mx-auto grid max-w-6xl gap-3 px-5 py-4 sm:grid-cols-2 sm:px-8 lg:grid-cols-4">
-        <Kpi label="Banca" value={brl(snap.bank)} hint={`${snap.contracts} mini agora · teto ${snap.max_contracts}`} />
+        <Kpi
+          label="Banca"
+          value={brl(snap.bank)}
+          hint={
+            asLot(snap.lot) === 'scaled'
+              ? `${snap.contracts} mini agora · teto ${snap.max_contracts}`
+              : 'sempre 1 mini'
+          }
+        />
         <Kpi
           label="P&L sessão"
           value={brl(snap.net_pnl)}

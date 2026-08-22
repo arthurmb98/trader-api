@@ -55,6 +55,7 @@ class LiveStart(BaseModel):
     start: str | None = None
     end: str | None = None
     source: str = "paper"
+    lot: str | None = None
     interval_sec: float = Field(default=0.001, ge=0.0, le=600.0)
 
 
@@ -230,6 +231,7 @@ def create_app() -> FastAPI:
                 interval_sec=body.interval_sec,
                 start=body.start,
                 end=body.end,
+                lot=body.lot,
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, str(exc)) from exc

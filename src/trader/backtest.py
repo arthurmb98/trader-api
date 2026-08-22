@@ -59,11 +59,30 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values))
 
 
+LOT_FIXED = "fixed"
+LOT_SCALED = "scaled"
+LOT_STEP = 1000.0
+
+
+def parse_lot(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    if text in {LOT_SCALED, "compound", "growing"}:
+        return LOT_SCALED
+    return LOT_FIXED
+
+
 def contracts_for_bank(bank: float, initial_bank: float, cap: int = 16) -> int:
     """+1 contract every multiple of the initial bank (500→1c, 1000→2c, 1500→3c…)."""
     if initial_bank <= 0:
         return 1
     return min(cap, max(1, int(bank // initial_bank)))
+
+
+def size_contracts(bank: float, lot: str, cap: int = 16) -> int:
+    """Always 1 mini, or +1 mini for every R$1.000 of bank."""
+    if parse_lot(lot) != LOT_SCALED:
+        return 1
+    return contracts_for_bank(bank, LOT_STEP, cap)
 
 
 class BacktestEngine:
@@ -81,6 +100,7 @@ class BacktestEngine:
         compound: bool = False,
         pa_sides: np.ndarray | None = None,
         strange_mask: np.ndarray | None = None,
+        compound_step: float | None = None,
     ) -> StudyMetrics:
         acc = self.config.account
         flt = self.config.filters
@@ -127,7 +147,8 @@ class BacktestEngine:
 
         def size_now() -> int:
             if compound:
-                return contracts_for_bank(bank, initial_bank)
+                step = float(compound_step) if compound_step else initial_bank
+                return contracts_for_bank(bank, step)
             return max(1, int(acc.contracts))
 
         n = len(test)

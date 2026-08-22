@@ -8,7 +8,15 @@ from typing import Any
 
 import pandas as pd
 
-from trader.backtest import BacktestEngine, SessionFilter, contracts_for_bank
+from trader.backtest import (
+    LOT_FIXED,
+    LOT_SCALED,
+    LOT_STEP,
+    BacktestEngine,
+    SessionFilter,
+    parse_lot,
+    size_contracts,
+)
 from trader.broker import Mt5Broker
 from trader.config import AppConfig
 from trader.data import frame_from_candles, load_candles
@@ -24,6 +32,7 @@ DEFAULT_CONFIG = "best_candles_m5_1000_a"
 DEFAULT_CASE = "last_candles"
 DEFAULT_TIMEFRAME = "m5"
 DEFAULT_BANK = 1000.0
+DEFAULT_LOT = LOT_FIXED
 WARMUP_DAYS = 5
 LOOKBACK_BARS = 80
 DEFAULT_INTERVAL_SEC = 0.001
@@ -167,6 +176,11 @@ def live_meta(timeframe: str = DEFAULT_TIMEFRAME) -> dict[str, Any]:
         "default_start": start.isoformat(),
         "default_end": end.isoformat(),
         "max_span_months": 3,
+        "lots": [
+            {"key": LOT_FIXED, "label": "1 contrato"},
+            {"key": LOT_SCALED, "label": "Crescente / R$ 1.000"},
+        ],
+        "lot": DEFAULT_LOT,
     }
 
 
@@ -381,6 +395,7 @@ def empty_live_snapshot() -> dict[str, Any]:
         "win_rate": 0.0,
         "max_drawdown": 0.0,
         "max_drawdown_pct": 0.0,
+        "lot": DEFAULT_LOT,
         "contracts": 1,
         "max_contracts": 1,
         "signal": None,
@@ -404,6 +419,7 @@ def snapshot_from_metrics(
     window_end: date,
     interval_sec: float,
     week: pd.DataFrame,
+    lot: str = DEFAULT_LOT,
 ) -> dict[str, Any]:
     trades = list(metrics.trades or [])
     periods = live_period_stats(trades, window_start, window_end)
@@ -473,9 +489,8 @@ def snapshot_from_metrics(
         "win_rate": round(float(metrics.win_rate), 1),
         "max_drawdown": round(float(metrics.max_drawdown), 2),
         "max_drawdown_pct": round(float(metrics.max_drawdown_pct), 1),
-        "contracts": contracts_for_bank(float(metrics.final_bank), float(metrics.initial_bank))
-        if metrics.initial_bank
-        else 1,
+        "lot": parse_lot(lot),
+        "contracts": size_contracts(float(metrics.final_bank), lot),
         "max_contracts": int(getattr(metrics, "max_contracts", 1) or 1),
         "signal": signal,
         "position": None,
@@ -495,6 +510,7 @@ def paper_batch_snapshot(
     start: str | None,
     end: str | None,
     interval_sec: float = DEFAULT_INTERVAL_SEC,
+    lot: str = DEFAULT_LOT,
 ) -> dict[str, Any]:
     case, timeframe, bank, window_start, window_end = validate_live_params(
         case,
@@ -525,11 +541,14 @@ def paper_batch_snapshot(
         pd.Timestamp(window_end),
     )
     use_guard = str(getattr(cfg.execution, "decision", "ml") or "ml") == "ml_guard"
+    lot = parse_lot(lot)
+    scaled = lot == LOT_SCALED
     metrics = BacktestEngine(cfg).run(
         week,
         week_pred,
-        compound=False,
+        compound=scaled,
         strange_mask=week_strange if use_guard else None,
+        compound_step=LOT_STEP if scaled else None,
     )
     return snapshot_from_metrics(
         metrics,
@@ -541,6 +560,7 @@ def paper_batch_snapshot(
         window_end,
         float(interval_sec),
         week,
+        lot=lot,
     )
 
 
@@ -563,6 +583,7 @@ class LiveEngine:
         self.last_bar_time: str | None = None
         self.bank = DEFAULT_BANK
         self.initial_bank = DEFAULT_BANK
+        self.lot = DEFAULT_LOT
         self.peak = DEFAULT_BANK
         self.max_dd = 0.0
         self.max_contracts = 1
@@ -640,7 +661,8 @@ class LiveEngine:
             "win_rate": round(100.0 * len(wins) / n, 1) if n else 0.0,
             "max_drawdown": round(self.max_dd, 2),
             "max_drawdown_pct": round(100.0 * self.max_dd / self.initial_bank, 1) if self.initial_bank else 0.0,
-            "contracts": contracts_for_bank(self.bank, self.initial_bank) if self.initial_bank else 1,
+            "lot": self.lot,
+            "contracts": size_contracts(self.bank, self.lot),
             "max_contracts": int(self.max_contracts),
             "signal": _signal_dict(self.last_signal),
             "position": _position_dict(self.position),
@@ -668,6 +690,7 @@ class LiveEngine:
             "last_bar_time": self.last_bar_time,
             "bank": self.bank,
             "initial_bank": self.initial_bank,
+            "lot": self.lot,
             "peak": self.peak,
             "max_dd": self.max_dd,
             "max_contracts": self.max_contracts,
@@ -695,6 +718,7 @@ class LiveEngine:
         self.last_bar_time = raw.get("last_bar_time")
         self.bank = float(raw.get("bank") or 1000)
         self.initial_bank = float(raw.get("initial_bank") or 1000)
+        self.lot = parse_lot(raw.get("lot"))
         self.peak = float(raw.get("peak") or self.initial_bank)
         self.max_dd = float(raw.get("max_dd") or 0)
         self.max_contracts = int(raw.get("max_contracts") or 1)
@@ -896,7 +920,7 @@ class LiveEngine:
         if sig.side is Side.FLAT:
             return
         acc = self._cfg.account
-        n_contracts = contracts_for_bank(self.bank, self.initial_bank)
+        n_contracts = size_contracts(self.bank, self.lot)
         self.max_contracts = max(self.max_contracts, n_contracts)
         if self.bank < max(50.0, acc.contract_cost * n_contracts + 20.0):
             return
@@ -985,6 +1009,7 @@ class LiveEngine:
         interval_sec: float,
         start: str | None = None,
         end: str | None = None,
+        lot: str = DEFAULT_LOT,
     ) -> dict[str, Any]:
         async with self._lock:
             self.stop()
@@ -999,6 +1024,7 @@ class LiveEngine:
             self.case = case
             self.timeframe = timeframe
             self.initial_bank = bank
+            self.lot = parse_lot(lot)
             self.source = source
             self.interval_sec = float(interval_sec)
             self.window_start = window_start
@@ -1007,7 +1033,9 @@ class LiveEngine:
             self.error = None
             self._batch_snap = None
             if source == "paper":
-                snap = paper_batch_snapshot(case, timeframe, bank, start, end, interval_sec)
+                snap = paper_batch_snapshot(
+                    case, timeframe, bank, start, end, interval_sec, lot=self.lot
+                )
                 self._batch_snap = snap
                 self.done = True
                 self.running = False
