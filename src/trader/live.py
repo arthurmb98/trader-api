@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 from datetime import date, datetime
 from typing import Any
@@ -9,19 +10,29 @@ import pandas as pd
 
 from trader.backtest import BacktestEngine, SessionFilter, contracts_for_bank
 from trader.broker import Mt5Broker
+from trader.config import AppConfig
 from trader.data import frame_from_candles, load_candles
 from trader.domain import Side, Signal, Trade
 from trader.paths import DATASETS_DIR, RESULTS_DIR
 from trader.replay import ensure_model, load_named_config
-from trader.signals import SignalPolicy
+from trader.signals import SignalPolicy, overlay_config
 
 SESSION_PATH = RESULTS_DIR / "live_session.json"
-WEEK_CSV = DATASETS_DIR / "mt5_m5_week.csv"
 DEFAULT_CONFIG = "best_candles_m5_1000_a"
-WARMUP = 40
-WEEK_DAYS = 5
+DEFAULT_CASE = "last_candles"
+DEFAULT_TIMEFRAME = "m5"
+DEFAULT_BANK = 1000.0
+WARMUP_DAYS = 5
 LOOKBACK_BARS = 80
 DEFAULT_INTERVAL_SEC = 0.001
+WALL_DATE = date(2025, 1, 1)
+LIVE_BANKS = (500, 1000, 2000, 3000, 5000, 10000, 15000)
+LIVE_CASES = ("last_candle", "last_candles")
+LIVE_TIMEFRAMES = ("m1", "m5")
+CASE_SLUG = {"last_candle": "lc", "last_candles": "candles"}
+CASE_LABEL = {"last_candle": "Último candle", "last_candles": "Últimos candles"}
+TF_LABEL = {"m1": "1 min", "m5": "5 min"}
+_BOUNDS_CACHE: dict[str, tuple[date, date]] = {}
 
 
 def _iso(value: datetime | date | None) -> str | None:
@@ -36,6 +47,143 @@ def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
     return pd.Timestamp(value).to_pydatetime()
+
+
+def add_months(day: date, months: int) -> date:
+    month = day.month - 1 + months
+    year = day.year + month // 12
+    month = month % 12 + 1
+    last = calendar.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last))
+
+
+def parse_day(value: str | None) -> date | None:
+    if not value:
+        return None
+    text = str(value).strip()[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"Data inválida: {value}") from exc
+
+
+def study_bank_for(initial_bank: float) -> int:
+    return 500 if float(initial_bank) < 1000 else 1000
+
+
+def live_config_name(case: str, timeframe: str, initial_bank: float) -> str:
+    slug = CASE_SLUG[case]
+    family = study_bank_for(initial_bank)
+    return f"best_{slug}_{timeframe}_{family}_a"
+
+
+def resolve_live_config(case: str, timeframe: str, initial_bank: float) -> tuple[str, AppConfig]:
+    name = live_config_name(case, timeframe, initial_bank)
+    cfg = load_named_config(name)
+    bank = float(initial_bank)
+    if abs(float(cfg.account.initial_bank) - bank) > 1e-9:
+        cfg = overlay_config(cfg, account__initial_bank=bank)
+    return name, cfg
+
+
+def test_csv_for(timeframe: str):
+    key = "1min" if timeframe == "m1" else "5min"
+    return DATASETS_DIR / f"WIN_{key}_test.csv"
+
+
+def dataset_bounds(timeframe: str) -> tuple[date, date]:
+    tf = timeframe if timeframe in LIVE_TIMEFRAMES else DEFAULT_TIMEFRAME
+    cached = _BOUNDS_CACHE.get(tf)
+    if cached is not None:
+        return cached
+    path = test_csv_for(tf)
+    if not path.exists():
+        raise FileNotFoundError(f"CSV de teste não encontrado: {path.name}")
+    frame = load_candles(path)
+    if frame.empty:
+        raise RuntimeError(f"CSV de teste vazio: {path.name}")
+    ts = pd.to_datetime(frame["timestamp"])
+    first = ts.min().date()
+    last = ts.max().date()
+    bounds = (max(WALL_DATE, first), last)
+    _BOUNDS_CACHE[tf] = bounds
+    return bounds
+
+
+def default_window(min_date: date, max_date: date) -> tuple[date, date]:
+    start = add_months(max_date, -1)
+    if start < min_date:
+        start = min_date
+    return start, max_date
+
+
+def validate_live_params(
+    case: str,
+    timeframe: str,
+    initial_bank: float,
+    source: str,
+    start: date | None,
+    end: date | None,
+) -> tuple[str, str, float, date | None, date | None]:
+    if case not in LIVE_CASES:
+        raise ValueError("Caso deve ser last_candle ou last_candles")
+    if timeframe not in LIVE_TIMEFRAMES:
+        raise ValueError("Timeframe deve ser m1 ou m5")
+    bank = float(initial_bank)
+    if int(bank) not in LIVE_BANKS:
+        allowed = ", ".join(str(v) for v in LIVE_BANKS)
+        raise ValueError(f"Banca deve ser uma de: {allowed}")
+    if source not in {"paper", "mt5"}:
+        raise ValueError("source deve ser paper ou mt5")
+    window_start, window_end = start, end
+    if source == "paper":
+        min_date, max_date = dataset_bounds(timeframe)
+        if window_start is None or window_end is None:
+            window_start, window_end = default_window(min_date, max_date)
+        if window_end < window_start:
+            raise ValueError("Data final deve ser maior ou igual à data inicial")
+        if window_start < min_date:
+            raise ValueError(f"Data inicial mínima: {min_date.isoformat()}")
+        if window_end > max_date:
+            raise ValueError(f"Data final máxima: {max_date.isoformat()}")
+        if window_end > add_months(window_start, 3):
+            raise ValueError("Janela limitada a 3 meses (treino trimestral)")
+    return case, timeframe, bank, window_start, window_end
+
+
+def live_meta(timeframe: str = DEFAULT_TIMEFRAME) -> dict[str, Any]:
+    tf = timeframe if timeframe in LIVE_TIMEFRAMES else DEFAULT_TIMEFRAME
+    min_date, max_date = dataset_bounds(tf)
+    start, end = default_window(min_date, max_date)
+    return {
+        "banks": list(LIVE_BANKS),
+        "cases": [{"key": key, "label": CASE_LABEL[key]} for key in LIVE_CASES],
+        "timeframes": [{"key": key, "label": TF_LABEL[key]} for key in LIVE_TIMEFRAMES],
+        "timeframe": tf,
+        "min_date": min_date.isoformat(),
+        "max_date": max_date.isoformat(),
+        "default_start": start.isoformat(),
+        "default_end": end.isoformat(),
+        "max_span_months": 3,
+    }
+
+
+def slice_paper_frame(frame: pd.DataFrame, start: date, end: date) -> tuple[pd.DataFrame, int]:
+    ts = pd.to_datetime(frame["timestamp"])
+    warmup_from = pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)
+    end_exclusive = pd.Timestamp(end) + pd.Timedelta(days=1)
+    sliced = frame.loc[(ts >= warmup_from) & (ts < end_exclusive)].copy().reset_index(drop=True)
+    if sliced.empty:
+        raise RuntimeError("Sem candles na janela escolhida.")
+    sliced_ts = pd.to_datetime(sliced["timestamp"])
+    trade = sliced_ts.dt.normalize() >= pd.Timestamp(start)
+    if not bool(trade.any()):
+        raise RuntimeError("Sem candles operáveis na janela escolhida.")
+    first_trade = int(trade.to_numpy().nonzero()[0][0])
+    cursor = max(0, first_trade - 1)
+    if len(sliced) >= 2:
+        cursor = min(cursor, len(sliced) - 2)
+    return sliced, cursor
 
 
 def _signal_dict(sig: Signal | None) -> dict[str, Any] | None:
@@ -117,22 +265,111 @@ def _position_from_dict(data: dict[str, Any] | None) -> dict | None:
     }
 
 
+def window_calendar_days(start: date | None, end: date | None) -> int:
+    if start is None or end is None:
+        return 0
+    return max(0, (end - start).days + 1)
+
+
+def period_levels_for(n_days: int) -> list[str]:
+    levels = ["daily"]
+    if n_days >= 7:
+        levels.append("weekly")
+    if n_days >= 30:
+        levels.append("monthly")
+    if n_days >= 90:
+        levels.append("quarterly")
+    return levels
+
+
+def _trade_exit(trade: dict[str, Any]) -> datetime | None:
+    raw = str(trade.get("exit_time") or "")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is not None:
+        ts = ts.replace(tzinfo=None)
+    return ts
+
+
+def _period_key(trade: dict[str, Any], kind: str) -> str | None:
+    ts = _trade_exit(trade)
+    if ts is None:
+        return None
+    if kind == "daily":
+        return ts.date().isoformat()
+    if kind == "weekly":
+        iso = ts.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if kind == "monthly":
+        return ts.strftime("%Y-%m")
+    quarter = (ts.month - 1) // 3 + 1
+    return f"{ts.year}-Q{quarter}"
+
+
+def _bucket_pnl(trades: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    buckets: dict[str, float] = {}
+    for trade in trades:
+        key = _period_key(trade, kind)
+        if not key:
+            continue
+        buckets[key] = round(buckets.get(key, 0.0) + float(trade.get("pnl") or 0), 2)
+    return [{"t": key, "pnl": value} for key, value in sorted(buckets.items())]
+
+
+def _gain_loss_avg(rows: list[dict[str, Any]]) -> dict[str, float | int]:
+    pnls = [float(row["pnl"]) for row in rows]
+    gains = [value for value in pnls if value > 0]
+    losses = [value for value in pnls if value < 0]
+    return {
+        "avg": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
+        "avg_gain": round(sum(gains) / len(gains), 2) if gains else 0.0,
+        "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0.0,
+        "n": len(rows),
+        "n_gain": len(gains),
+        "n_loss": len(losses),
+    }
+
+
+def live_period_stats(
+    trades: list[dict[str, Any]],
+    start: date | None,
+    end: date | None,
+) -> dict[str, Any]:
+    n_days = window_calendar_days(start, end)
+    levels = period_levels_for(n_days)
+    series = {kind: _bucket_pnl(trades, kind) for kind in ("daily", "weekly", "monthly", "quarterly")}
+    return {
+        "window_days": n_days,
+        "levels": levels,
+        "series": {kind: series[kind] for kind in levels},
+        "avg": {kind: _gain_loss_avg(series[kind]) for kind in levels},
+    }
+
+
 class LiveEngine:
     """Paper (or MT5-data) walk-forward session. Never sends orders."""
 
     def __init__(self) -> None:
         self.config_name = DEFAULT_CONFIG
+        self.case = DEFAULT_CASE
+        self.timeframe = DEFAULT_TIMEFRAME
         self.source = "paper"
         self.interval_sec = DEFAULT_INTERVAL_SEC
+        self.window_start: date | None = None
+        self.window_end: date | None = None
         self.running = False
         self.done = False
         self.error: str | None = None
         self.cursor = 0
         self.last_tick: str | None = None
         self.last_bar_time: str | None = None
-        self.bank = 1000.0
-        self.initial_bank = 1000.0
-        self.peak = 1000.0
+        self.bank = DEFAULT_BANK
+        self.initial_bank = DEFAULT_BANK
+        self.peak = DEFAULT_BANK
         self.max_dd = 0.0
         self.max_contracts = 1
         self._ticks_since_save = 0
@@ -172,13 +409,21 @@ class LiveEngine:
                 continue
             daily[key] = round(daily.get(key, 0.0) + float(t.get("pnl") or 0), 2)
         daily_rows = [{"t": k, "pnl": v} for k, v in sorted(daily.items())]
+        periods = live_period_stats(self.trades, self.window_start, self.window_end)
+        avg_daily = float((periods.get("avg") or {}).get("daily", {}).get("avg") or 0.0)
         return {
             "running": self.running,
             "done": self.done,
             "error": self.error,
             "config": self.config_name,
+            "case": self.case,
+            "timeframe": self.timeframe,
             "source": self.source,
             "interval_sec": self.interval_sec,
+            "window_start": self.window_start.isoformat() if self.window_start else None,
+            "window_end": self.window_end.isoformat() if self.window_end else None,
+            "start": self.window_start.isoformat() if self.window_start else None,
+            "end": self.window_end.isoformat() if self.window_end else None,
             "last_tick": self.last_tick,
             "last_bar_time": self.last_bar_time,
             "cursor": self.cursor,
@@ -187,7 +432,7 @@ class LiveEngine:
             "bank": round(self.bank, 2),
             "net_pnl": net,
             "today_pnl": round(today_closed, 2),
-            "avg_daily": round(net / n_days, 2) if n_days else 0.0,
+            "avg_daily": avg_daily,
             "n_days": n_days,
             "n_trades": n,
             "n_wins": len(wins),
@@ -201,6 +446,7 @@ class LiveEngine:
             "trades": list(reversed(self.trades[-80:])),
             "equity": self.equity[-400:],
             "daily": daily_rows,
+            "periods": periods,
             "signals": list(reversed(self.signals[-40:])),
             "candles": self.candles_tail,
         }
@@ -209,8 +455,12 @@ class LiveEngine:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "config_name": self.config_name,
+            "case": self.case,
+            "timeframe": self.timeframe,
             "source": self.source,
             "interval_sec": self.interval_sec,
+            "window_start": self.window_start.isoformat() if self.window_start else None,
+            "window_end": self.window_end.isoformat() if self.window_end else None,
             "running": False,
             "done": self.done,
             "cursor": self.cursor,
@@ -233,8 +483,12 @@ class LiveEngine:
 
     def _restore_state(self, raw: dict[str, Any]) -> None:
         self.config_name = str(raw.get("config_name") or DEFAULT_CONFIG)
+        self.case = str(raw.get("case") or DEFAULT_CASE)
+        self.timeframe = str(raw.get("timeframe") or DEFAULT_TIMEFRAME)
         self.source = str(raw.get("source") or "paper")
         self.interval_sec = float(raw.get("interval_sec") or DEFAULT_INTERVAL_SEC)
+        self.window_start = parse_day(raw.get("window_start"))
+        self.window_end = parse_day(raw.get("window_end"))
         self.done = bool(raw.get("done"))
         self.cursor = int(raw.get("cursor") or 0)
         self.last_bar_time = raw.get("last_bar_time")
@@ -286,6 +540,10 @@ class LiveEngine:
         self.max_contracts = 1
         self._ticks_since_save = 0
         self._frame = None
+        self._cfg = None
+        self._policy = None
+        self._bt = None
+        self._session = None
         if SESSION_PATH.exists():
             SESSION_PATH.unlink()
 
@@ -298,23 +556,30 @@ class LiveEngine:
         self._persist()
 
     def _prepare_runtime(self, reset_cursor: bool) -> None:
-        cfg = load_named_config(self.config_name)
+        name, cfg = resolve_live_config(self.case, self.timeframe, self.initial_bank)
+        self.config_name = name
         self._cfg = cfg
         self.initial_bank = float(cfg.account.initial_bank)
+        self.timeframe = str(cfg.data.timeframe)
         model = ensure_model(cfg.data.timeframe, cfg.resolve_csv(cfg.data.train_csv))
         self._policy = SignalPolicy(cfg, model)
         self._bt = BacktestEngine(cfg)
         self._session = SessionFilter(cfg)
+        cursor = 0
         if self.source == "mt5":
             self._frame = self._load_mt5()
         else:
-            if WEEK_CSV.exists():
-                path = WEEK_CSV
-            else:
+            path = test_csv_for(self.timeframe)
+            if not path.exists():
                 path = cfg.resolve_csv(cfg.data.test_csv)
-                if not path.exists():
-                    path = DATASETS_DIR / "WIN_5min_test.csv"
-            self._frame = load_candles(path)
+            full = load_candles(path)
+            start = self.window_start
+            end = self.window_end
+            if start is None or end is None:
+                min_date, max_date = dataset_bounds(self.timeframe)
+                start, end = default_window(min_date, max_date)
+                self.window_start, self.window_end = start, end
+            self._frame, cursor = slice_paper_frame(full, start, end)
         if self._frame is None or self._frame.empty:
             raise RuntimeError("Sem candles para a sessão ao vivo.")
         if reset_cursor:
@@ -322,24 +587,19 @@ class LiveEngine:
             self.peak = self.bank
             self.max_dd = 0.0
             self.max_contracts = 1
-            self.cursor = self._paper_start_index()
+            if self.source == "paper":
+                self.cursor = cursor
+            else:
+                self.cursor = max(1, len(self._frame) - 1)
             self.equity = [
                 {
                     "t": pd.Timestamp(self._frame.iloc[self.cursor]["timestamp"]).isoformat(),
                     "bank": round(self.bank, 2),
                 }
             ]
+        elif self._frame is not None and len(self._frame):
+            self.cursor = min(max(0, self.cursor), len(self._frame) - 1)
         self._refresh_candles_tail()
-
-    def _paper_start_index(self) -> int:
-        """First bar of the last 5 pregões (semana de estudo), with ATR warmup."""
-        assert self._frame is not None
-        ts = pd.to_datetime(self._frame["timestamp"])
-        days = ts.dt.normalize().drop_duplicates().sort_values()
-        week = days.tail(WEEK_DAYS)
-        start_day = week.iloc[0]
-        idx = int((ts.dt.normalize() == start_day).to_numpy().nonzero()[0][0])
-        return max(WARMUP, idx - 1)
 
     def _load_mt5(self) -> pd.DataFrame:
         assert self._cfg is not None
@@ -514,16 +774,37 @@ class LiveEngine:
             self.running = False
             raise
 
-    async def start(self, config: str, source: str, interval_sec: float) -> dict[str, Any]:
+    async def start(
+        self,
+        case: str,
+        timeframe: str,
+        initial_bank: float,
+        source: str,
+        interval_sec: float,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
         async with self._lock:
             self.stop()
-            self.config_name = config or DEFAULT_CONFIG
-            self.source = source if source in {"paper", "mt5"} else "paper"
+            case, timeframe, bank, window_start, window_end = validate_live_params(
+                case,
+                timeframe,
+                initial_bank,
+                source,
+                parse_day(start),
+                parse_day(end),
+            )
+            self.case = case
+            self.timeframe = timeframe
+            self.initial_bank = bank
+            self.source = source
             self.interval_sec = float(interval_sec)
-            self.running = True
+            self.window_start = window_start
+            self.window_end = window_end
             self.done = False
             self.error = None
             self._prepare_runtime(reset_cursor=True)
+            self.running = True
             loop = asyncio.get_running_loop()
             self._task = loop.create_task(self.run_loop())
             return self.snapshot()

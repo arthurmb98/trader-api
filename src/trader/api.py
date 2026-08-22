@@ -49,7 +49,11 @@ class OrderRequest(BaseModel):
 
 
 class LiveStart(BaseModel):
-    config: str = "best_candles_m5_1000_a"
+    case: str = "last_candles"
+    timeframe: str = "m5"
+    initial_bank: float = 1000
+    start: str | None = None
+    end: str | None = None
     source: str = "paper"
     interval_sec: float = Field(default=0.001, ge=0.0, le=600.0)
 
@@ -197,6 +201,15 @@ def create_app() -> FastAPI:
         sig = Signal(side=side, entry=body.entry or 0, stop=body.stop, take=body.take, reason="manual")
         return _send(cfg, sig)
 
+    @app.get("/api/live/meta")
+    def live_meta(timeframe: str = "m5") -> dict[str, Any]:
+        from trader.live import live_meta as _live_meta
+
+        try:
+            return _live_meta(timeframe)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, str(exc)) from exc
+
     @app.get("/api/live")
     def live_status() -> dict[str, Any]:
         from trader.live import ENGINE
@@ -207,10 +220,16 @@ def create_app() -> FastAPI:
     async def live_start(body: LiveStart) -> dict[str, Any]:
         from trader.live import ENGINE
 
-        if body.source not in {"paper", "mt5"}:
-            raise HTTPException(400, "source deve ser paper ou mt5")
         try:
-            return await ENGINE.start(body.config, body.source, body.interval_sec)
+            return await ENGINE.start(
+                case=body.case,
+                timeframe=body.timeframe,
+                initial_bank=body.initial_bank,
+                source=body.source,
+                interval_sec=body.interval_sec,
+                start=body.start,
+                end=body.end,
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, str(exc)) from exc
 
