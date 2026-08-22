@@ -3,5 +3,10 @@
   "framework": "vite",
   "installCommand": "npm --prefix web install",
   "buildCommand": "npm --prefix web run build",
-  "outputDirectory": "web/dist"
+  "outputDirectory": "web/dist",
+  "rewrites": [
+    { "source": "/favicon.ico", "destination": "/brand/logo-branco.png" },
+    { "source": "/live", "destination": "/index.html" },
+    { "source": "/live/", "destination": "/index.html" }
+  ]
 }
