@@ -180,7 +180,19 @@ function windowTooLong(start: string, end: string) {
   return end > addMonths(start, 3)
 }
 
-const CASE_LABEL: Record<CaseKey, string> = {
+function minIso(a: string, b: string) {
+  if (!a) return b
+  if (!b) return a
+  return a < b ? a : b
+}
+
+function maxIso(a: string, b: string) {
+  if (!a) return b
+  if (!b) return a
+  return a > b ? a : b
+}
+
+const RANGE_MIN = '2025-01-01'
   last_candle: 'Último candle',
   last_candles: 'Últimos candles',
 }
@@ -449,18 +461,21 @@ export function LivePage() {
   )
 
   const banks = meta?.banks?.length ? meta.banks : FALLBACK_BANKS
-  const minDate = meta?.min_date || '2025-01-01'
-  const maxDate = meta?.max_date || start || end
+  const rangeMin = meta?.min_date || RANGE_MIN
+  const rangeMax = meta?.max_date || new Date().toISOString().slice(0, 10)
+  const startMax = end ? minIso(end, rangeMax) : rangeMax
+  const endMin = start ? maxIso(start, rangeMin) : rangeMin
+  const endMax = start ? minIso(rangeMax, addMonths(start, 3)) : rangeMax
   const dateError =
     source === 'paper' && start && end
       ? end < start
         ? 'Data final deve ser maior ou igual à inicial'
         : windowTooLong(start, end)
           ? 'Janela limitada a 3 meses (treino trimestral)'
-          : start < minDate
-            ? `Data inicial mínima: ${dayLabel(minDate)}`
-            : maxDate && end > maxDate
-              ? `Data final máxima: ${dayLabel(maxDate)}`
+          : start < rangeMin
+            ? `Data inicial mínima: ${dayLabel(rangeMin)}`
+            : end > rangeMax
+              ? `Data final máxima: ${dayLabel(rangeMax)}`
               : null
       : null
   const locked = busy || snap.running
@@ -531,26 +546,34 @@ export function LivePage() {
               <option value="m5">5 min</option>
               <option value="m1">1 min</option>
             </select>
-            <input
-              type="date"
-              className={selectClass}
-              value={start}
-              min={minDate}
-              max={maxDate || undefined}
-              disabled={locked || source === 'mt5'}
-              onChange={(e) => setStart(e.target.value)}
-              aria-label="Início da janela"
-            />
-            <input
-              type="date"
-              className={selectClass}
-              value={end}
-              min={minDate}
-              max={maxDate || undefined}
-              disabled={locked || source === 'mt5'}
-              onChange={(e) => setEnd(e.target.value)}
-              aria-label="Fim da janela"
-            />
+            <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+              De
+              <input
+                type="date"
+                className={selectClass}
+                value={start}
+                min={rangeMin}
+                max={startMax || undefined}
+                disabled={locked || source === 'mt5'}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setStart(next)
+                  if (next && end && end < next) setEnd(next)
+                }}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+              Até
+              <input
+                type="date"
+                className={selectClass}
+                value={end}
+                min={endMin}
+                max={endMax || undefined}
+                disabled={locked || source === 'mt5'}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+            </label>
             <select
               className={selectClass}
               value={source}
