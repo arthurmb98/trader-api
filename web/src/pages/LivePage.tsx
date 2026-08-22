@@ -193,6 +193,7 @@ function maxIso(a: string, b: string) {
 }
 
 const RANGE_MIN = '2025-01-01'
+const CASE_LABEL: Record<CaseKey, string> = {
   last_candle: 'Último candle',
   last_candles: 'Últimos candles',
 }
