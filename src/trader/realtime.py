@@ -56,7 +56,8 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "config": CONFIG_NAME,
         "case": "last_candles",
         "timeframe": "m5",
-        "source": "mt5",
+        "source": "stream",
+        "order_mode": "paper",
         "interval_sec": POLL_SEC,
         "window_start": None,
         "window_end": None,
@@ -88,10 +89,10 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "periods": live_period_stats([], None, None),
         "signals": [],
         "candles": [],
-        "wait_reason": "aguardando_login",
+        "wait_reason": "mercado_fechado",
         "next_gold": next_gold_window(),
-        "playbook": DEMO_PLAYBOOK,
-        "mode": "mt5",
+        "playbook": None,
+        "mode": "paper",
         "feed": {"ready": False, "symbol": None, "detail": None, "error": None},
         "mt5": {
             "ready": False,
@@ -114,12 +115,13 @@ class RealtimeEngine:
         self.config_name = CONFIG_NAME
         self.case = "last_candles"
         self.timeframe = "m5"
-        self.source = "mt5"
+        self.source = "stream"
+        self.order_mode = "paper"
         self.interval_sec = POLL_SEC
         self.running = False
         self.done = False
         self.error: str | None = None
-        self.wait_reason = "aguardando_login"
+        self.wait_reason = "mercado_fechado"
         self.cursor = 0
         self.last_tick: str | None = None
         self.last_bar_time: str | None = None
@@ -180,6 +182,12 @@ class RealtimeEngine:
         except Exception:  # noqa: BLE001
             periods = live_period_stats(self.trades, None, None)
         avg_daily = float((periods.get("avg") or {}).get("daily", {}).get("avg") or 0.0)
+        live_last = False
+        if self.last_bar_time:
+            try:
+                live_last = bar_is_live(datetime.fromisoformat(self.last_bar_time), datetime.now())
+            except ValueError:
+                live_last = False
         return {
             "running": self.running,
             "done": self.done,
@@ -188,13 +196,14 @@ class RealtimeEngine:
             "case": self.case,
             "timeframe": self.timeframe,
             "source": self.source,
+            "order_mode": self.order_mode,
             "interval_sec": self.interval_sec,
             "window_start": None,
             "window_end": None,
             "start": None,
             "end": None,
-            "last_tick": self.last_tick,
-            "last_bar_time": self.last_bar_time,
+            "last_tick": self.last_tick if live_last else None,
+            "last_bar_time": self.last_bar_time if live_last else None,
             "cursor": self.cursor,
             "n_bars": 0 if self._frame is None else int(len(self._frame)),
             "initial_bank": round(self.initial_bank, 2),
@@ -218,11 +227,11 @@ class RealtimeEngine:
             "daily": daily_rows,
             "periods": periods,
             "signals": list(reversed(self.signals[-40:])),
-            "candles": self.candles_tail,
+            "candles": self.candles_tail if live_last else [],
             "wait_reason": self.wait_reason,
             "next_gold": next_gold_window(),
-            "playbook": DEMO_PLAYBOOK if self.source == "mt5" and self.wait_reason == "aguardando_login" else None,
-            "mode": "paper" if self.source == "stream" else "mt5",
+            "playbook": DEMO_PLAYBOOK if self.order_mode == "mt5" and self.wait_reason == "aguardando_login" else None,
+            "mode": self.order_mode,
             "feed": dict(self.feed_info),
             "mt5": dict(self.mt5_info),
         }
@@ -238,6 +247,7 @@ class RealtimeEngine:
             "last_bar_time": snap["last_bar_time"],
             "last_tick": snap["last_tick"],
             "source": snap["source"],
+            "order_mode": snap["order_mode"],
             "mode": snap["mode"],
             "feed": snap["feed"],
             "mt5": snap["mt5"],
@@ -247,17 +257,18 @@ class RealtimeEngine:
     def list_feeds(self) -> dict[str, Any]:
         return {
             "source": self.source,
+            "order_mode": self.order_mode,
             "feeds": [
                 {
                     "key": "mt5",
-                    "label": "MetaTrader 5",
+                    "label": "Enviar (MT5 demo)",
                     "ready": bool(self.mt5_info.get("ready")),
                     "mode": "mt5",
                 },
                 {
                     "key": "stream",
-                    "label": "Stream (paper)",
-                    "ready": self._stream.ready(),
+                    "label": "Simular (stream)",
+                    "ready": self._stream.ready(live_only=True),
                     "mode": "paper",
                 },
             ],
@@ -268,22 +279,36 @@ class RealtimeEngine:
         self.feed_info = self._stream.status()
         return {"ok": True, "n": len(candles), "symbol": self._stream.symbol, "feed": self.feed_info}
 
-    def set_source(self, source: str) -> None:
-        key = str(source or "mt5").strip().lower()
-        if key not in {"mt5", "stream"}:
-            raise ValueError("source deve ser mt5 ou stream")
-        self.source = key
-        if key == "stream":
+    def set_order_mode(self, mode: str) -> None:
+        key = str(mode or "paper").strip().lower()
+        if key not in {"paper", "mt5"}:
+            raise ValueError("order_mode deve ser paper ou mt5")
+        self.order_mode = key
+        if key == "paper":
+            self.source = "stream"
             self.error = None
-            self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS)
+            self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False)
             self.feed_info = self._stream.status()
             self.wait_reason = "aguardando_candle"
+        else:
+            self.source = "mt5"
+            self.wait_reason = "aguardando_login"
+
+    def set_source(self, source: str) -> None:
+        key = str(source or "stream").strip().lower()
+        if key not in {"mt5", "stream"}:
+            raise ValueError("source deve ser mt5 ou stream")
+        if key == "stream":
+            self.set_order_mode("paper")
+            return
+        self.set_order_mode("mt5")
 
     def _persist(self) -> None:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
             "config_name": self.config_name,
             "source": self.source,
+            "order_mode": self.order_mode,
             "running": False,
             "processed_bar": self.processed_bar,
             "last_bar_time": self.last_bar_time,
@@ -311,8 +336,16 @@ class RealtimeEngine:
             raw = json.loads(SESSION_PATH.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        if raw.get("order_mode") in {"paper", "mt5"}:
+            self.order_mode = str(raw["order_mode"])
+        elif raw.get("source") == "stream":
+            self.order_mode = "paper"
         if raw.get("source") in {"mt5", "stream"}:
             self.source = str(raw["source"])
+        if self.order_mode == "paper":
+            self.source = "stream"
+        else:
+            self.source = "mt5"
         self.processed_bar = raw.get("processed_bar")
         self.last_bar_time = raw.get("last_bar_time")
         self.bank = float(raw.get("bank") or DEFAULT_BANK)
@@ -492,6 +525,8 @@ class RealtimeEngine:
 
     def _send_signal(self, broker: Mt5Broker, sig: Signal, entry: float) -> None:
         assert self._cfg is not None and self._bt is not None
+        if self.order_mode == "paper":
+            raise RuntimeError("Modo simular não envia ordem.")
         if self.mt5_info.get("demo") is False:
             raise RuntimeError("Recusado: conta real.")
         n = self._n_contracts()
@@ -581,7 +616,7 @@ class RealtimeEngine:
                 return
         assert self._session is not None and self._policy is not None
         self._keep_today_only(now.date())
-        if self.source == "stream":
+        if self.order_mode == "paper" or self.source == "stream":
             self._tick_stream(now)
             return
         broker = self._ensure_broker()
@@ -663,7 +698,9 @@ class RealtimeEngine:
     def _tick_stream(self, now: datetime) -> None:
         assert self._session is not None and self._policy is not None
         try:
-            candles = self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS)
+            candles = self._stream.last_closed_candles(
+                self._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False
+            )
         except Exception as exc:  # noqa: BLE001
             self.feed_info = self._stream.status()
             self.wait_reason = "aguardando_candle"
@@ -675,7 +712,19 @@ class RealtimeEngine:
         self.feed_info = self._stream.status()
         if not candles:
             self.error = None
-            self.wait_reason = "aguardando_candle"
+            self.last_bar_time = None
+            self.candles_tail = []
+            self.wait_reason = session_wait_reason(
+                connected=True,
+                account=True,
+                demo=True,
+                symbol=self._stream.symbol,
+                trade_allowed=True,
+                now=now,
+                last_bar=None,
+                in_position=self.position is not None,
+                session=self._session,
+            )
             return
         self._frame = frame_from_candles(candles, source_file="stream")
         self.error = None
@@ -694,8 +743,7 @@ class RealtimeEngine:
             ts = ts.replace(tzinfo=None)
         self.last_bar_time = ts.isoformat()
         self._refresh_candles_tail()
-        file_only = self._stream.origin == "file"
-        live_bar = (not file_only) and bar_is_live(ts, now)
+        live_bar = self._stream.origin in {"ingest", "http"} and bar_is_live(ts, now)
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
@@ -707,8 +755,11 @@ class RealtimeEngine:
             in_position=self.position is not None,
             session=self._session,
         )
-        if file_only or not live_bar:
-            self.processed_bar = self.last_bar_time
+        if not live_bar:
+            if not self._session.allows(now) and now.time().hour < 9:
+                self.wait_reason = "mercado_fechado"
+            self.last_bar_time = None
+            self.candles_tail = []
             return
         if self.position is not None:
             self._manage_open(None, last, ts, now)
@@ -755,10 +806,12 @@ class RealtimeEngine:
         self._task = loop.create_task(self.run_loop())
         return self.snapshot()
 
-    async def start(self, source: str | None = None) -> dict[str, Any]:
-        if source is not None:
+    async def start(self, source: str | None = None, order_mode: str | None = None) -> dict[str, Any]:
+        if order_mode is not None:
+            self.set_order_mode(order_mode)
+        elif source is not None:
             self.set_source(source)
-            self._persist()
+        self._persist()
         return await self.arm()
 
     def stop(self) -> None:

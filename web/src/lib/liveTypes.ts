@@ -61,6 +61,7 @@ export type LiveSnap = {
   case?: CaseKey | string
   timeframe?: TfKey | string
   source: string
+  order_mode?: 'paper' | 'mt5' | string
   interval_sec: number
   window_start?: string | null
   window_end?: string | null
@@ -111,6 +112,8 @@ export type LiveSnap = {
     error?: string | null
     origin?: string | null
     file?: string | null
+    url?: boolean
+    ingested?: number
   }
   mt5?: Mt5Snap
 }

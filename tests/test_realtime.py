@@ -221,3 +221,50 @@ def test_stream_falls_back_to_local_csv() -> None:
     engine._keep_today_only(date(2026, 8, 24))
     assert engine.trades == []
     assert engine.bank == 1000
+
+
+def test_paper_waits_at_night_and_never_sends() -> None:
+    import pandas as pd
+
+    class Boom:
+        def send(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("order_send nao pode rodar no paper")
+
+    engine = RealtimeEngine()
+    engine.set_order_mode("paper")
+    engine._broker = Boom()  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine.tick(now=datetime(2026, 8, 24, 2, 10))
+    assert engine.order_mode == "paper"
+    assert engine.trades == []
+    assert engine.bank == 1000
+    assert engine.snapshot()["mode"] == "paper"
+    assert engine.wait_reason == "mercado_fechado"
+
+    rows = []
+    price = 140_000.0
+    start = datetime(2026, 8, 24, 6, 0)
+    for i in range(40):
+        ts = start + pd.Timedelta(minutes=5 * i)
+        rows.append(
+            {
+                "t": ts.isoformat(),
+                "open": price,
+                "high": price + 40,
+                "low": price - 20,
+                "close": price + 15,
+            }
+        )
+        price += 10
+    engine.ingest_candles({"symbol": "WINV26", "candles": rows})
+    engine.tick(now=datetime(2026, 8, 24, 9, 20))
+    assert engine.snapshot()["mode"] == "paper"
+    assert engine.position is None or engine.position.get("ticket") is None
+
+    engine.set_order_mode("mt5")
+    engine.mt5_info["demo"] = False
+    try:
+        engine._send_signal(Boom(), Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "x"), 140_000.0)  # type: ignore[arg-type]
+        raise AssertionError("mt5 sem demo nao pode enviar")
+    except RuntimeError as exc:
+        assert "real" in str(exc).lower() or "simular" in str(exc).lower() or "Recusado" in str(exc)

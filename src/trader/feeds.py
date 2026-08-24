@@ -190,7 +190,7 @@ class StreamFeed(MarketFeed):
         self._detail = f"file {path.name} {len(candles)} candles"
         return candles
 
-    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
+    def last_closed_candles(self, symbol: str, timeframe: str, count: int, *, allow_file: bool = True) -> list[Candle]:
         del timeframe
         self.symbol = symbol or self.symbol
         self._error = None
@@ -208,7 +208,7 @@ class StreamFeed(MarketFeed):
                 http = None
             if http:
                 candles = http
-            else:
+            elif allow_file:
                 try:
                     file_rows = self._from_file()
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -221,11 +221,13 @@ class StreamFeed(MarketFeed):
             return []
         return candles[-max(count, 1) :]
 
-    def ready(self) -> bool:
+    def ready(self, *, live_only: bool = False) -> bool:
         if self._ingested:
             return True
         if self._url():
             return True
+        if live_only:
+            return False
         return self._file() is not None
 
     def status(self) -> dict[str, Any]:

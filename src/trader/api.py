@@ -50,6 +50,7 @@ class OrderRequest(BaseModel):
 
 class RealtimeStart(BaseModel):
     source: str | None = None
+    order_mode: str | None = None
 
 
 class StreamCandleIn(BaseModel):
@@ -324,11 +325,14 @@ def create_app() -> FastAPI:
     def realtime_source(body: RealtimeStart) -> dict[str, Any]:
         from trader.realtime import get_realtime_engine
 
-        if not body.source:
-            raise HTTPException(400, "source deve ser mt5 ou stream")
+        if not body.source and not body.order_mode:
+            raise HTTPException(400, "informe source ou order_mode")
         try:
             engine = get_realtime_engine()
-            engine.set_source(body.source)
+            if body.order_mode:
+                engine.set_order_mode(body.order_mode)
+            elif body.source:
+                engine.set_source(body.source)
             engine._persist()
             return engine.snapshot()
         except ValueError as exc:
@@ -339,7 +343,10 @@ def create_app() -> FastAPI:
         from trader.realtime import get_realtime_engine
 
         try:
-            return await get_realtime_engine().start(source=body.source if body else None)
+            return await get_realtime_engine().start(
+                source=body.source if body else None,
+                order_mode=body.order_mode if body else None,
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
