@@ -25,6 +25,17 @@ class Predictor(ABC):
         ...
 
 
+class MarketFeed(ABC):
+    """Closed candles for the live engine. Does not send orders."""
+
+    @abstractmethod
+    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
+        ...
+
+    def status(self) -> dict[str, Any]:
+        return {"ready": False}
+
+
 class Broker(ABC):
     @abstractmethod
     def connect(self) -> None:

@@ -90,14 +90,37 @@ PYTHONPATH=src python -m trader replay --source mt5
 
 Se `datasets/mt5_m5_week.csv` não existir, o comando avisa e tenta `datasets/WIN_5min_test.csv` (pode faltar o fim da semana).
 
-## Ligar o MetaTrader 5
+## Replay e ao vivo (front)
 
-1. Windows com o terminal MT5 aberto e algo trading autorizado.
-2. Instale o pacote `MetaTrader5` no Python (não existe no macOS).
-3. Em `configs/live.yaml` (ou na config vencedora): `mt5.enabled: true` e o símbolo do vencimento atual (`WIN$` ou `WINQ26`, etc.).
-4. `PYTHONPATH=src python -m trader serve`
-5. `POST /api/signal` para ver o sinal. `POST /api/orders` envia a ordem com stop e alvo.
-6. Comece em **conta simulada**.
+- `/replay` (a antiga “Ao vivo”) simula janelas de CSV. Não envia ordem.
+- `/ao-vivo` opera de verdade no MT5 local, setup `best_candles_m5_1000_a` (M5, R$ 1.000, 1 mini).
+
+## Ligar o MetaTrader 5 (conta demo)
+
+WIN na B3 **não existe** na demo genérica da MetaQuotes. A API só se anexa ao terminal já aberto.
+
+1. Abra conta em [cadastro.clear.com.br](https://cadastro.clear.com.br) (ou use XP/Rico/Clear se já for cliente).
+2. Contrate **MetaTrader 5 Demo** em Plataformas (~R$ 9,90/mês). O e-mail com login pode levar até 24h.
+3. Instale o MT5 **DEMO da Clear**. Arquivo → Abrir uma conta → CLEAR CTVM → CLEAR DEMO.
+4. Market Watch: vencimento atual (`WINV26` em ago/2026). AutoTrading verde.
+5. Windows:
+
+```bash
+pip install -r requirements-windows.txt
+set PYTHONPATH=src
+python -m trader mt5-check
+python -m trader serve
+```
+
+Em outro terminal: `cd web && npm run dev`. Abra http://127.0.0.1:5173/ao-vivo.
+
+O motor arma sozinho com a API. Fora do ouro (09:15–11:00 e 14:30–17:00) ele espera. **Conta real é recusada.** Deixe o Windows ligado, o MT5 aberto e a API rodando.
+
+No Ao vivo o seletor **Fonte** tem MetaTrader 5 e Stream (paper). Se o MT5 cair, troque na mão para Stream: candles via `POST /api/realtime/candles`, `WIN_STREAM_URL` ou `datasets/win_stream.json`. Ordens no Stream são simuladas.
+
+Opcional: copie `.env.example` para `.env` com `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER`. Não commite senha.
+
+A apresentação no Vercel continua só com o estudo e o replay paper. `/api/realtime` no host devolve 400.
 
 ## Estrutura
 

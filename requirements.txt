@@ -7,3 +7,4 @@ pyyaml>=6.0.0
 joblib>=1.4.0
 pydantic>=2.0.0
 python-multipart>=0.0.9
+# No Windows, para o MT5: pip install -r requirements-windows.txt

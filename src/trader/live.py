@@ -261,6 +261,7 @@ def _position_dict(position: dict | None) -> dict[str, Any] | None:
         "extreme": float(position["extreme"]),
         "contracts": int(position.get("contracts") or 1),
         "reason": str(position.get("reason") or ""),
+        "ticket": position.get("ticket"),
     }
 
 
@@ -278,6 +279,7 @@ def _position_from_dict(data: dict[str, Any] | None) -> dict | None:
         "extreme": float(data.get("extreme") or data["entry"]),
         "contracts": int(data.get("contracts") or 1),
         "reason": str(data.get("reason") or ""),
+        "ticket": data.get("ticket"),
     }
 
 

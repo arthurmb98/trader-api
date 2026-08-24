@@ -48,6 +48,36 @@ class OrderRequest(BaseModel):
     volume: float = Field(default=1.0, gt=0)
 
 
+class RealtimeStart(BaseModel):
+    source: str = "mt5"
+
+
+class StreamCandleIn(BaseModel):
+    t: str | None = None
+    timestamp: str | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    abertura: float | None = None
+    maximo: float | None = None
+    minimo: float | None = None
+    fechamento: float | None = None
+    volume: float = 0
+    symbol: str | None = None
+
+
+class StreamCandlesIn(BaseModel):
+    symbol: str = "WIN$"
+    timeframe: str = "m5"
+    candles: list[StreamCandleIn] | None = None
+    t: str | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+
+
 class LiveStart(BaseModel):
     case: str = "last_candles"
     timeframe: str = "m5"
@@ -80,11 +110,20 @@ def _load_model(timeframe: str) -> CandleRegressor:
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        from trader.realtime import get_realtime_engine
+
+        engine = get_realtime_engine()
+        try:
+            await engine.arm()
+        except Exception:  # noqa: BLE001
+            pass
         yield
         from trader.live import ENGINE
 
         if ENGINE is not None:
             ENGINE.stop()
+        engine.stop()
+        engine.disconnect()
 
     app = FastAPI(
         title="Trader API",
@@ -250,6 +289,59 @@ def create_app() -> FastAPI:
         get_engine().reset()
         return get_engine().snapshot()
 
+    @app.get("/api/realtime/status")
+    def realtime_status() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        return get_realtime_engine().status()
+
+    @app.get("/api/realtime/feeds")
+    def realtime_feeds() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        return get_realtime_engine().list_feeds()
+
+    @app.get("/api/realtime")
+    def realtime_snapshot() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        return get_realtime_engine().snapshot()
+
+    @app.post("/api/realtime/candles")
+    def realtime_candles(body: StreamCandlesIn) -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        payload = body.model_dump(exclude_none=True)
+        try:
+            return get_realtime_engine().ingest_candles(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/realtime/start")
+    async def realtime_start(body: RealtimeStart = RealtimeStart()) -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        try:
+            return await get_realtime_engine().start(source=body.source)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/realtime/stop")
+    def realtime_stop() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        engine = get_realtime_engine()
+        engine.stop()
+        return engine.snapshot()
+
+    @app.post("/api/realtime/reset")
+    def realtime_reset() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        engine = get_realtime_engine()
+        engine.reset()
+        return engine.snapshot()
+
     def _send(cfg: AppConfig, sig) -> dict[str, Any]:
         broker = Mt5Broker(
             cfg.mt5.symbol, cfg.mt5.magic, cfg.mt5.deviation, cfg.mt5.filling, cfg.mt5.comment
@@ -277,9 +369,12 @@ def create_app() -> FastAPI:
         def index() -> FileResponse:
             return FileResponse(WEB_DIST / "index.html")
 
-        @app.get("/live")
-        def live_page() -> FileResponse:
+        def _spa() -> FileResponse:
             return FileResponse(WEB_DIST / "index.html")
+
+        app.add_api_route("/live", _spa, methods=["GET"])
+        app.add_api_route("/replay", _spa, methods=["GET"])
+        app.add_api_route("/ao-vivo", _spa, methods=["GET"])
 
     else:
 

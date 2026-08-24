@@ -13,3 +13,5 @@ web/dist/
 .vercel
 datasets/WIN$D*.csv
 studies/results/live_session.json
+studies/results/realtime_session.json
+.env

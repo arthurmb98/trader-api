@@ -429,7 +429,10 @@ export function StudyPage() {
         <p className="font-display text-lg font-bold">Sinal WIN</p>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" asChild>
-            <a href="/live">Ao vivo</a>
+            <a href="/replay">Replay</a>
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <a href="/ao-vivo">Ao vivo</a>
           </Button>
           <Button variant="outline" size="sm" onClick={() => document.getElementById('parecer')?.scrollIntoView()}>
             Comparar

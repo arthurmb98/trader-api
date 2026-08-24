@@ -24,6 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     serve = sub.add_parser("serve", help="Sobe a API FastAPI")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    sub.add_parser("mt5-check", help="Testa o terminal MT5 (login demo, WIN, order_check, sem enviar ordem)")
     args = parser.parse_args(argv)
 
     if args.cmd == "prepare-data":
@@ -56,6 +57,10 @@ def main(argv: list[str] | None = None) -> None:
 
         uvicorn.run("trader.api:app", host=args.host, port=args.port, reload=False)
         return
+    if args.cmd == "mt5-check":
+        from trader.mt5_session import mt5_check
+
+        raise SystemExit(mt5_check())
     parser.print_help()
     sys.exit(1)
 
