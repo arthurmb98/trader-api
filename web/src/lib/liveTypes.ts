@@ -199,6 +199,14 @@ export function clock(value: string | null | undefined) {
   return d.toLocaleString('pt-BR')
 }
 
+export function isTodayStamp(value: string | null | undefined) {
+  if (!value) return false
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return false
+  const now = new Date()
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+}
+
 export function dayLabel(value: string | null | undefined) {
   if (!value) return '—'
   const [y, m, d] = value.slice(0, 10).split('-')

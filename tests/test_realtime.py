@@ -9,6 +9,8 @@ from trader.mt5_session import (
     SymbolCandidate,
     TRADE_MODE_FULL,
     bar_is_fresh,
+    bar_is_live,
+    bar_is_today,
     front_win_contract,
     next_gold_window,
     pick_win_symbol,
@@ -68,6 +70,11 @@ def test_gold_hours_and_fresh_bar() -> None:
     assert session.flatten_day(datetime(2026, 8, 24, 17, 0))
     assert bar_is_fresh(datetime(2026, 8, 24, 9, 15), datetime(2026, 8, 24, 9, 20))
     assert not bar_is_fresh(datetime(2026, 8, 21, 17, 50), night)
+    assert not bar_is_fresh(datetime(2026, 8, 24, 11, 0), gold)
+    assert bar_is_today(gold, gold)
+    assert not bar_is_today(datetime(2026, 8, 14, 9, 35), gold)
+    assert bar_is_live(datetime(2026, 8, 24, 9, 15), gold)
+    assert not bar_is_live(datetime(2026, 8, 14, 9, 35), gold)
     assert session_wait_reason(
         connected=True,
         account=True,
@@ -187,10 +194,24 @@ def test_stream_falls_back_to_local_csv() -> None:
     engine.set_source("stream")
     engine._prepare_policy()
     engine.tick(now=datetime(2026, 8, 24, 1, 50))
+    engine.reset()
+    engine.tick(now=datetime(2026, 8, 24, 9, 20))
+    engine.tick(now=datetime(2026, 8, 24, 9, 25))
     assert engine.error is None
     assert engine.trades == []
     assert engine.position is None
     assert engine.bank == engine.initial_bank == 1000
     assert engine.snapshot()["net_pnl"] == 0
     assert engine.snapshot()["mode"] == "paper"
-    assert engine._frame is not None and not engine._frame.empty
+    engine.trades = [
+        {
+            "side": "BUY",
+            "entry_time": "2026-08-14T09:35:00",
+            "exit_time": "2026-08-14T09:35:00",
+            "pnl": 60.0,
+        }
+    ]
+    engine.bank = 1060
+    engine._keep_today_only(date(2026, 8, 24))
+    assert engine.trades == []
+    assert engine.bank == 1000

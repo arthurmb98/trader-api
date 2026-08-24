@@ -24,7 +24,7 @@ from trader.mt5_session import (
     DEFAULT_MAGIC,
     DEMO_PLAYBOOK,
     LOOKBACK_BARS,
-    bar_is_fresh,
+    bar_is_live,
     env_credentials,
     next_gold_window,
     planned_order,
@@ -329,6 +329,28 @@ class RealtimeEngine:
         self.trades = list(raw.get("trades") or [])
         self.equity = list(raw.get("equity") or [])
         self.signals = list(raw.get("signals") or [])
+        self._keep_today_only(date.today())
+
+    def _keep_today_only(self, today: date) -> None:
+        day = today.isoformat()
+
+        def _on_day(stamp: Any) -> bool:
+            return str(stamp or "")[:10] == day
+
+        kept = [t for t in self.trades if _on_day(t.get("exit_time") or t.get("entry_time"))]
+        if len(kept) == len(self.trades) and (self.position is None or _on_day(self.position.get("time"))):
+            return
+        self.trades = kept
+        self.signals = [item for item in self.signals if _on_day(item.get("t"))]
+        self.equity = [item for item in self.equity if _on_day(item.get("t"))]
+        self.bank = self.initial_bank + sum(float(item.get("pnl") or 0) for item in kept)
+        self.peak = max([self.initial_bank, self.bank, *[float(item.get("bank") or self.bank) for item in self.equity]])
+        self.max_dd = 0.0
+        self.day_pnl = sum(float(item.get("pnl") or 0) for item in kept)
+        self.trades_today = len(kept)
+        if self.position is not None and not _on_day(self.position.get("time")):
+            self.position = None
+        self.processed_bar = None
 
     def _prepare_policy(self) -> None:
         cfg = load_live_config()
@@ -490,6 +512,8 @@ class RealtimeEngine:
 
     def _open_paper(self, sig: Signal, entry: float, ts: datetime) -> None:
         assert self._bt is not None
+        if self.source == "stream" and getattr(self._stream, "origin", None) == "file":
+            return
         stop, take = self._bt.risk.levels(sig.side, entry, None)
         self.position = {
             "side": sig.side,
@@ -547,6 +571,7 @@ class RealtimeEngine:
                 self.wait_reason = "aguardando_login" if self.source == "mt5" else "aguardando_candle"
                 return
         assert self._session is not None and self._policy is not None
+        self._keep_today_only(now.date())
         if self.source == "stream":
             self._tick_stream(now)
             return
@@ -603,7 +628,7 @@ class RealtimeEngine:
         if self.position is not None:
             self._manage_open(broker, last, ts, now)
         new_bar = self.last_bar_time != self.processed_bar
-        if new_bar and self._can_enter(now, live_mt5=True) and bar_is_fresh(ts, now):
+        if new_bar and self._can_enter(now, live_mt5=True) and bar_is_live(ts, now):
             history = self._frame
             sig = self._policy.from_candles(history)
             self.last_signal = sig
@@ -660,6 +685,8 @@ class RealtimeEngine:
             ts = ts.replace(tzinfo=None)
         self.last_bar_time = ts.isoformat()
         self._refresh_candles_tail()
+        file_only = self._stream.origin == "file"
+        live_bar = (not file_only) and bar_is_live(ts, now)
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
@@ -667,14 +694,17 @@ class RealtimeEngine:
             symbol=self._stream.symbol,
             trade_allowed=True,
             now=now,
-            last_bar=ts,
+            last_bar=ts if live_bar else None,
             in_position=self.position is not None,
             session=self._session,
         )
+        if file_only or not live_bar:
+            self.processed_bar = self.last_bar_time
+            return
         if self.position is not None:
             self._manage_open(None, last, ts, now)
         new_bar = self.last_bar_time != self.processed_bar
-        if new_bar and self._can_enter(now, live_mt5=False) and bar_is_fresh(ts, now):
+        if new_bar and self._can_enter(now, live_mt5=False) and live_bar:
             sig = self._policy.from_candles(self._frame)
             self.last_signal = sig
             self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})

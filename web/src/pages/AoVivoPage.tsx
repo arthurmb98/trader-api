@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { SessionDashboard, SessionNav } from '@/components/SessionDashboard'
 import { Button } from '@/components/ui/button'
-import { EMPTY_SNAP, clock, type LiveSnap } from '@/lib/liveTypes'
+import { EMPTY_SNAP, clock, isTodayStamp, type LiveSnap } from '@/lib/liveTypes'
 import { brl, readJson } from '@/lib/utils'
 
 const WAIT_LABEL: Record<string, string> = {
@@ -9,7 +9,7 @@ const WAIT_LABEL: Record<string, string> = {
   conta_real: 'Conta real detectada — o robô não envia ordem',
   sem_simbolo: 'Sem WIN negociável no Market Watch',
   autotrading_desligado: 'Ligue o AutoTrading no MT5',
-  mercado_fechado: 'Mercado fechado — espera o pregão',
+  mercado_fechado: 'Fora do pregão — operação só no horário de hoje',
   fora_do_ouro: 'Fora do horário de ouro (09:15–11:00 e 14:30–17:00)',
   fim_da_sessao: 'Sessão encerrada às 17:00',
   em_posicao: 'Posição aberta',
@@ -113,9 +113,8 @@ export function AoVivoPage() {
         </p>
         <h1 className="mt-3 font-display text-4xl font-bold">Operação em tempo real</h1>
         <p className="mt-2 max-w-3xl text-muted-foreground">
-          {status}. Últimos candles · 5 min · 1 mini · best_candles_m5_1000_a
-          {snap.last_bar_time ? ` · candle ${clock(snap.last_bar_time)}` : ''}
-          {snap.last_tick ? ` · tick ${clock(snap.last_tick)}` : ''}
+          {status}. 5 min · 1 mini · best_candles_m5_1000_a
+          {isTodayStamp(snap.last_bar_time) ? ` · candle ${clock(snap.last_bar_time)}` : ' · sem candle de hoje'}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <span className="rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain">
@@ -193,9 +192,9 @@ export function AoVivoPage() {
         snap={snap}
         emptyHint={
           source === 'stream'
-            ? snap.feed?.ready
-              ? 'Nenhuma ordem paper ainda. O motor segue o horário de ouro nos candles da fonte.'
-              : 'Nenhuma ordem paper ainda. Sem fonte: POST /api/realtime/candles, WIN_STREAM_URL ou datasets/WIN_5min_test.csv.'
+            ? snap.feed?.origin === 'file'
+              ? 'CSV antigo só no gráfico. Ordem paper só com candle de hoje (POST /candles, URL ou MT5).'
+              : 'Nenhuma ordem paper ainda. Só candle de hoje, no horário de ouro.'
             : 'Nenhuma ordem ao vivo ainda. O motor espera o horário de ouro e um candle M5 novo.'
         }
       />

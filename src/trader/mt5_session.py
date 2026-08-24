@@ -196,7 +196,21 @@ def bar_is_fresh(bar_ts: datetime, now: datetime | None = None, max_age_sec: int
         bar_ts = bar_ts.replace(tzinfo=None)
     if getattr(clock, "tzinfo", None) is not None:
         clock = clock.replace(tzinfo=None)
-    return (clock - bar_ts).total_seconds() <= max_age_sec
+    age = (clock - bar_ts).total_seconds()
+    return 0 <= age <= max_age_sec
+
+
+def bar_is_today(bar_ts: datetime, now: datetime | None = None) -> bool:
+    clock = now or datetime.now()
+    if getattr(bar_ts, "tzinfo", None) is not None:
+        bar_ts = bar_ts.replace(tzinfo=None)
+    if getattr(clock, "tzinfo", None) is not None:
+        clock = clock.replace(tzinfo=None)
+    return bar_ts.date() == clock.date()
+
+
+def bar_is_live(bar_ts: datetime, now: datetime | None = None, max_age_sec: int = 20 * 60) -> bool:
+    return bar_is_today(bar_ts, now) and bar_is_fresh(bar_ts, now, max_age_sec)
 
 
 def planned_order(signal: Signal, entry: float, stop: float, take: float, volume: float = 1.0) -> dict[str, Any] | None:
