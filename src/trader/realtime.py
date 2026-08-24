@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -39,6 +41,28 @@ SESSION_PATH = RESULTS_DIR / "realtime_session.json"
 CONFIG_NAME = "best_candles_m5_1000_a"
 DEFAULT_BANK = 1000.0
 POLL_SEC = 10.0
+ALIGN_SLACK_MS = 250.0
+CATCHUP_SEC = 1.0
+
+
+def seconds_until_aligned(
+    now_ts: float,
+    interval: float = POLL_SEC,
+    slack_ms: float = ALIGN_SLACK_MS,
+) -> float:
+    """Seconds until the next unix time divisible by *interval*, plus slack."""
+    step = max(1.0, float(interval))
+    slack = max(0.0, float(slack_ms)) / 1000.0
+    slot = math.floor(now_ts / step) * step
+    target = slot + slack
+    if now_ts < target:
+        return target - now_ts
+    return slot + step + slack - now_ts
+
+
+def is_m5_close_slot(now: datetime) -> bool:
+    """True on the :00 ten-second slot of a 5-minute close."""
+    return now.minute % 5 == 0 and now.second < 10
 
 
 def load_live_config() -> AppConfig:
@@ -109,7 +133,7 @@ def empty_realtime_snapshot() -> dict[str, Any]:
 
 
 class RealtimeEngine:
-    """Live MT5 session: reads closed M5 bars and sends demo orders."""
+    """Paper live session on Mac: closed M5 bars from Yahoo/demo, simulated fills."""
 
     def __init__(self) -> None:
         self.config_name = CONFIG_NAME
@@ -267,7 +291,7 @@ class RealtimeEngine:
                 },
                 {
                     "key": "stream",
-                    "label": "Simular (stream)",
+                    "label": "Simular (Yahoo / demo)",
                     "ready": self._stream.ready(live_only=True),
                     "mode": "paper",
                 },
@@ -699,7 +723,7 @@ class RealtimeEngine:
         assert self._session is not None and self._policy is not None
         try:
             candles = self._stream.last_closed_candles(
-                self._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False
+                self._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False, now=now
             )
         except Exception as exc:  # noqa: BLE001
             self.feed_info = self._stream.status()
@@ -743,7 +767,7 @@ class RealtimeEngine:
             ts = ts.replace(tzinfo=None)
         self.last_bar_time = ts.isoformat()
         self._refresh_candles_tail()
-        live_bar = self._stream.origin in {"ingest", "http"} and bar_is_live(ts, now)
+        live_bar = self._stream.origin in {"ingest", "http", "yahoo", "demo"} and bar_is_live(ts, now)
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
@@ -783,11 +807,22 @@ class RealtimeEngine:
             self._ticks_since_save = 0
 
     async def run_loop(self) -> None:
+        interval = max(1.0, float(self.interval_sec))
         try:
             while self.running:
+                await asyncio.sleep(seconds_until_aligned(time.time(), interval))
+                if not self.running:
+                    break
+                clock = datetime.now()
+                before = self.processed_bar
                 async with self._lock:
                     await asyncio.to_thread(self.tick)
-                await asyncio.sleep(max(1.0, float(self.interval_sec)))
+                if self.running and is_m5_close_slot(clock) and self.processed_bar == before:
+                    await asyncio.sleep(CATCHUP_SEC)
+                    if not self.running:
+                        break
+                    async with self._lock:
+                        await asyncio.to_thread(self.tick)
         except asyncio.CancelledError:
             self.running = False
             raise
@@ -807,10 +842,8 @@ class RealtimeEngine:
         return self.snapshot()
 
     async def start(self, source: str | None = None, order_mode: str | None = None) -> dict[str, Any]:
-        if order_mode is not None:
-            self.set_order_mode(order_mode)
-        elif source is not None:
-            self.set_source(source)
+        del source, order_mode
+        self.set_order_mode("paper")
         self._persist()
         return await self.arm()
 

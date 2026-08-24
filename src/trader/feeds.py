@@ -4,21 +4,30 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from trader.domain import Candle
-from trader.mt5_session import _load_dotenv
+from trader.mt5_session import _load_dotenv, bar_is_live
 from trader.paths import DATASETS_DIR, ROOT
 from trader.ports import MarketFeed
 
 DEFAULT_FILE = DATASETS_DIR / "win_stream.json"
+DEMO_CSV = DATASETS_DIR / "WIN_5min_test.csv"
 FALLBACK_FILES = (
     DATASETS_DIR / "win_stream.json",
     DATASETS_DIR / "mt5_m5_week.csv",
-    DATASETS_DIR / "WIN_5min_test.csv",
+    DEMO_CSV,
 )
+YAHOO_SYMBOL = "^BVSP"
+YAHOO_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+BAR_MINUTES = 5
+
+YahooFetch = Callable[[str], dict[str, Any]]
 
 
 def _ts(value: Any) -> datetime:
@@ -78,10 +87,104 @@ def parse_stream_payload(raw: Any, symbol: str = "WIN$") -> tuple[str, list[Cand
     return name, candles
 
 
-class StreamFeed(MarketFeed):
-    """Candles from ingest memory, HTTP URL, or a local JSON/CSV file."""
+def parse_yahoo_chart(payload: dict[str, Any], now: datetime | None = None) -> list[Candle]:
+    """Closed 5-minute bars from a Yahoo Finance chart JSON."""
+    clock = now or datetime.now()
+    results = (payload.get("chart") or {}).get("result") or []
+    if not results:
+        raise ValueError("Yahoo chart sem result.")
+    result = results[0]
+    meta = result.get("meta") or {}
+    symbol = str(meta.get("symbol") or YAHOO_SYMBOL)
+    offset = int(meta.get("gmtoffset") or -3 * 3600)
+    stamps = result.get("timestamp") or []
+    quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+    candles: list[Candle] = []
+    for i, unix in enumerate(stamps):
+        if i >= len(opens) or i >= len(highs) or i >= len(lows) or i >= len(closes):
+            break
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        if o is None or h is None or l is None or c is None:
+            continue
+        ts = datetime.utcfromtimestamp(int(unix)) + timedelta(seconds=offset)
+        if ts + timedelta(minutes=BAR_MINUTES) > clock:
+            continue
+        vol = volumes[i] if i < len(volumes) and volumes[i] is not None else 0
+        candles.append(
+            Candle(
+                symbol=symbol,
+                timestamp=ts,
+                open=float(o),
+                high=float(h),
+                low=float(l),
+                close=float(c),
+                volume=float(vol),
+            )
+        )
+    candles.sort(key=lambda item: item.timestamp)
+    return candles
 
-    def __init__(self) -> None:
+
+def yahoo_chart_url(symbol: str = YAHOO_SYMBOL) -> str:
+    encoded = urllib.request.quote(symbol, safe="")
+    return (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}"
+        "?interval=5m&range=5d&includePrePost=false"
+    )
+
+
+def _yahoo_disabled() -> bool:
+    _load_dotenv()
+    return (os.environ.get("WIN_DISABLE_YAHOO") or "").strip().lower() in {"1", "true", "yes"}
+
+
+def clock_demo_candles(rows: list[Candle], now: datetime, count: int) -> list[Candle]:
+    """Map the last WIN session day onto today; only emit bars whose 5m window has closed."""
+    if not rows:
+        return []
+    by_day: dict[date, list[Candle]] = {}
+    for candle in rows:
+        by_day.setdefault(candle.timestamp.date(), []).append(candle)
+    session_days = [
+        day
+        for day, bars in by_day.items()
+        if any(time(9, 0) <= bar.timestamp.time() <= time(17, 0) for bar in bars)
+    ]
+    session_days.sort()
+    if not session_days:
+        return rows[-max(count, 1) :]
+    src_day = session_days[-1]
+    warmup = [candle for candle in rows if candle.timestamp.date() < src_day]
+    if now.weekday() >= 5:
+        return (warmup + by_day[src_day])[-max(count, 1) :]
+    mapped: list[Candle] = []
+    for bar in by_day[src_day]:
+        ts = datetime.combine(now.date(), bar.timestamp.time())
+        if ts + timedelta(minutes=BAR_MINUTES) > now:
+            continue
+        mapped.append(
+            Candle(
+                symbol=bar.symbol,
+                timestamp=ts,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+            )
+        )
+    return (warmup + mapped)[-max(count, 1) :]
+
+
+class StreamFeed(MarketFeed):
+    """Candles from ingest, optional URL, Yahoo ^BVSP 5m, or a WIN clock demo."""
+
+    def __init__(self, yahoo_fetch: YahooFetch | None = None) -> None:
         self.symbol = "WIN$"
         self.origin = "none"
         self._ingested: list[Candle] = []
@@ -89,6 +192,8 @@ class StreamFeed(MarketFeed):
         self._detail = "sem candles"
         self._file_cache: list[Candle] | None = None
         self._file_cache_key: tuple[str, float] | None = None
+        self._yahoo_fetch = yahoo_fetch
+        self._yahoo_cache: tuple[float, list[Candle]] | None = None
 
     def ingest(self, raw: Any) -> list[Candle]:
         name, candles = parse_stream_payload(raw, self.symbol)
@@ -154,15 +259,10 @@ class StreamFeed(MarketFeed):
         self._detail = f"http {len(candles)} candles"
         return candles
 
-    def _from_file(self) -> list[Candle] | None:
-        path = self._file()
-        if path is None:
-            return None
+    def _load_csv_candles(self, path: Path) -> list[Candle]:
         mtime = path.stat().st_mtime
         cache_key = (str(path), mtime)
         if self._file_cache is not None and self._file_cache_key == cache_key:
-            self.origin = "file"
-            self._detail = f"file {path.name} {len(self._file_cache)} candles"
             return self._file_cache
         if path.suffix.lower() == ".csv":
             from trader.data import load_candles
@@ -186,45 +286,122 @@ class StreamFeed(MarketFeed):
                 self.symbol = name
         self._file_cache = candles
         self._file_cache_key = cache_key
+        return candles
+
+    def _from_file(self) -> list[Candle] | None:
+        path = self._file()
+        if path is None:
+            return None
+        candles = self._load_csv_candles(path)
         self.origin = "file"
         self._detail = f"file {path.name} {len(candles)} candles"
         return candles
 
-    def last_closed_candles(self, symbol: str, timeframe: str, count: int, *, allow_file: bool = True) -> list[Candle]:
+    def _fetch_yahoo_json(self, url: str) -> dict[str, Any]:
+        if self._yahoo_fetch is not None:
+            return self._yahoo_fetch(url)
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": YAHOO_UA},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _yahoo_symbol(self) -> str:
+        _load_dotenv()
+        return (os.environ.get("WIN_YAHOO_SYMBOL") or YAHOO_SYMBOL).strip() or YAHOO_SYMBOL
+
+    def _from_yahoo(self, now: datetime) -> list[Candle] | None:
+        if _yahoo_disabled():
+            return None
+        cached = self._yahoo_cache
+        if cached is not None and now.timestamp() - cached[0] < 20:
+            candles = cached[1]
+            self.origin = "yahoo"
+            self._detail = f"yahoo {self._yahoo_symbol()} {len(candles)} candles"
+            self.symbol = candles[-1].symbol if candles else self._yahoo_symbol()
+            return candles
+        payload = self._fetch_yahoo_json(yahoo_chart_url(self._yahoo_symbol()))
+        candles = parse_yahoo_chart(payload, now)
+        self._yahoo_cache = (now.timestamp(), candles)
+        if candles:
+            self.symbol = candles[-1].symbol
+        self.origin = "yahoo"
+        self._detail = f"yahoo {self._yahoo_symbol()} {len(candles)} candles"
+        return candles
+
+    def _from_demo(self, now: datetime, count: int) -> list[Candle] | None:
+        path = DEMO_CSV if DEMO_CSV.exists() else self._file()
+        if path is None or not path.exists():
+            return None
+        rows = self._load_csv_candles(path)
+        candles = clock_demo_candles(rows, now, count)
+        self.symbol = "WIN$"
+        self.origin = "demo"
+        self._detail = f"demo {path.name} {len(candles)} candles"
+        return candles
+
+    def last_closed_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        count: int,
+        *,
+        allow_file: bool = True,
+        now: datetime | None = None,
+    ) -> list[Candle]:
         del timeframe
+        clock = now or datetime.now()
         self.symbol = symbol or self.symbol
         self._error = None
         self.origin = "none"
+        n = max(count, 1)
         candles: list[Candle] = []
         if self._ingested:
             candles = list(self._ingested)
             self.origin = "ingest"
             self._detail = f"ingest {len(candles)} candles"
-        else:
+            return candles[-n:]
+        try:
+            http = self._from_http()
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            self._error = str(exc)
+            http = None
+        if http and bar_is_live(http[-1].timestamp, clock):
+            return http[-n:]
+        try:
+            yahoo = self._from_yahoo(clock)
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError, KeyError) as exc:
+            self._error = str(exc)
+            yahoo = None
+        if yahoo and bar_is_live(yahoo[-1].timestamp, clock):
+            return yahoo[-n:]
+        try:
+            demo = self._from_demo(clock, n)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._error = str(exc)
+            demo = None
+        if demo:
+            return demo[-n:]
+        if allow_file:
             try:
-                http = self._from_http()
-            except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+                file_rows = self._from_file()
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
                 self._error = str(exc)
-                http = None
-            if http:
-                candles = http
-            elif allow_file:
-                try:
-                    file_rows = self._from_file()
-                except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    self._error = str(exc)
-                    file_rows = None
-                if file_rows:
-                    candles = file_rows
-        if not candles:
-            self._detail = "sem candles"
-            return []
-        return candles[-max(count, 1) :]
+                file_rows = None
+            if file_rows:
+                return file_rows[-n:]
+        self._detail = "sem candles"
+        return []
 
     def ready(self, *, live_only: bool = False) -> bool:
         if self._ingested:
             return True
         if self._url():
+            return True
+        if not _yahoo_disabled():
+            return True
+        if DEMO_CSV.exists():
             return True
         if live_only:
             return False
