@@ -333,7 +333,8 @@ class RealtimeEngine:
             "config_name": self.config_name,
             "source": self.source,
             "order_mode": self.order_mode,
-            "running": False,
+            "running": self.running,
+            "armed": self.running,
             "processed_bar": self.processed_bar,
             "last_bar_time": self.last_bar_time,
             "bank": self.bank,
@@ -815,14 +816,19 @@ class RealtimeEngine:
                     break
                 clock = datetime.now()
                 before = self.processed_bar
-                async with self._lock:
-                    await asyncio.to_thread(self.tick)
-                if self.running and is_m5_close_slot(clock) and self.processed_bar == before:
-                    await asyncio.sleep(CATCHUP_SEC)
-                    if not self.running:
-                        break
+                try:
                     async with self._lock:
                         await asyncio.to_thread(self.tick)
+                    if self.running and is_m5_close_slot(clock) and self.processed_bar == before:
+                        await asyncio.sleep(CATCHUP_SEC)
+                        if not self.running:
+                            break
+                        async with self._lock:
+                            await asyncio.to_thread(self.tick)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    self.error = str(exc)
         except asyncio.CancelledError:
             self.running = False
             raise

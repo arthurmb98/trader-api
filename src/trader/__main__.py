@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
 
 
@@ -56,13 +58,20 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "serve":
         import uvicorn
 
-        uvicorn.run(
-            "trader.api:app",
-            host=args.host,
-            port=args.port,
-            reload=args.debug,
-            log_level="debug" if args.debug else "info",
-        )
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        try:
+            os.setsid()
+        except OSError:
+            pass
+        serve_kw: dict = {
+            "host": args.host,
+            "port": args.port,
+            "reload": args.debug,
+            "log_level": "debug" if args.debug else "info",
+        }
+        if args.debug:
+            serve_kw["reload_excludes"] = ["*.json", "web/*", "studies/results/*", ".venv/*"]
+        uvicorn.run("trader.api:app", **serve_kw)
         return
     if args.cmd == "mt5-check":
         from trader.mt5_session import mt5_check

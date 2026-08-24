@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SessionDashboard, SessionNav } from '@/components/SessionDashboard'
 import { Button } from '@/components/ui/button'
 import { EMPTY_SNAP, clock, isTodayStamp, type LiveSnap } from '@/lib/liveTypes'
@@ -33,6 +33,7 @@ export function AoVivoPage() {
   })
   const [offline, setOffline] = useState(false)
   const [busy, setBusy] = useState(false)
+  const wasOffline = useRef(false)
 
   const applySnap = (json: LiveSnap) => {
     setSnap(json)
@@ -47,8 +48,14 @@ export function AoVivoPage() {
         throw new Error(typeof json.detail === 'string' ? json.detail : 'API ao vivo indisponível')
       }
       const json = await readJson<LiveSnap>(res)
+      const reconnect = wasOffline.current
+      wasOffline.current = false
       applySnap(json)
+      if (reconnect && !json.running) {
+        void post('/api/realtime/start', { order_mode: 'paper' })
+      }
     } catch (err) {
+      wasOffline.current = true
       setOffline(true)
       setSnap((prev) => ({
         ...prev,

@@ -228,32 +228,23 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
         ))}
       </section>
 
-      <section className="relative mx-auto grid max-w-6xl gap-4 px-5 py-2 sm:px-8 lg:grid-cols-3">
-        <div className="rounded-2xl border border-border bg-elevated/50 p-5 lg:col-span-1">
+      <section className="relative mx-auto grid max-w-6xl grid-cols-1 gap-4 px-5 py-2 sm:px-8">
+        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Sinal atual</p>
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-3 flex flex-wrap items-center gap-4">
             <SideMark side={snap.signal?.side ?? 'FLAT'} />
             <p className="font-display text-xl font-bold">{snap.signal?.reason || 'aguardando'}</p>
+            {snap.signal ? (
+              <p className="tabular-nums">
+                {snap.signal.entry.toFixed(0)} · stop {snap.signal.stop.toFixed(0)} · alvo {snap.signal.take.toFixed(0)}
+              </p>
+            ) : null}
+            <p className="text-sm text-muted-foreground">
+              {snap.n_trades} trades · {snap.n_wins} wins · acerto {pct(snap.win_rate)} · barra {snap.cursor}/{snap.n_bars}
+            </p>
           </div>
-          <dl className="mt-4 grid grid-cols-3 gap-2 text-sm">
-            <div>
-              <dt className="text-muted-foreground">Entrada</dt>
-              <dd className="tabular-nums">{snap.signal ? snap.signal.entry.toFixed(0) : '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Stop</dt>
-              <dd className="tabular-nums text-loss">{snap.signal ? snap.signal.stop.toFixed(0) : '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Alvo</dt>
-              <dd className="tabular-nums text-gain">{snap.signal ? snap.signal.take.toFixed(0) : '—'}</dd>
-            </div>
-          </dl>
-          <p className="mt-4 text-xs text-muted-foreground">
-            {snap.n_trades} trades · {snap.n_wins} wins · acerto {pct(snap.win_rate)} · barra {snap.cursor}/{snap.n_bars}
-          </p>
         </div>
-        <div className="rounded-2xl border border-border bg-elevated/50 p-5 lg:col-span-2">
+        <div className="rounded-2xl border border-border bg-elevated/50 p-5">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Ordem aberta</p>
           {snap.position ? (
             <div className="mt-3 flex flex-wrap items-center gap-4">

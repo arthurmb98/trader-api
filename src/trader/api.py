@@ -116,8 +116,8 @@ def create_app() -> FastAPI:
         engine = get_realtime_engine()
         try:
             await engine.arm()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            engine.error = str(exc)
         yield
         from trader.live import ENGINE
 
