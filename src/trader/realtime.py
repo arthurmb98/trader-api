@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from trader.backtest import LOT_FIXED, BacktestEngine, SessionFilter, size_contracts
+from trader.backtest import LOT_SCALED, BacktestEngine, SessionFilter, size_contracts
 from trader.broker import Mt5Broker
 from trader.config import AppConfig
 from trader.data import frame_from_candles
@@ -39,7 +39,6 @@ SESSION_PATH = RESULTS_DIR / "realtime_session.json"
 CONFIG_NAME = "best_candles_m5_1000_a"
 DEFAULT_BANK = 1000.0
 POLL_SEC = 10.0
-VOLUME = 1.0
 
 
 def load_live_config() -> AppConfig:
@@ -78,7 +77,7 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "win_rate": 0.0,
         "max_drawdown": 0.0,
         "max_drawdown_pct": 0.0,
-        "lot": LOT_FIXED,
+        "lot": LOT_SCALED,
         "contracts": 1,
         "max_contracts": 1,
         "signal": None,
@@ -127,7 +126,7 @@ class RealtimeEngine:
         self.processed_bar: str | None = None
         self.bank = DEFAULT_BANK
         self.initial_bank = DEFAULT_BANK
-        self.lot = LOT_FIXED
+        self.lot = LOT_SCALED
         self.peak = DEFAULT_BANK
         self.max_dd = 0.0
         self.max_contracts = 1
@@ -292,6 +291,7 @@ class RealtimeEngine:
             "initial_bank": self.initial_bank,
             "peak": self.peak,
             "max_dd": self.max_dd,
+            "lot": self.lot,
             "max_contracts": self.max_contracts,
             "day_key": self.day_key.isoformat() if self.day_key else None,
             "day_pnl": self.day_pnl,
@@ -320,6 +320,8 @@ class RealtimeEngine:
         self.peak = float(raw.get("peak") or self.initial_bank)
         self.max_dd = float(raw.get("max_dd") or 0)
         self.max_contracts = int(raw.get("max_contracts") or 1)
+        if raw.get("lot"):
+            self.lot = str(raw["lot"])
         day = raw.get("day_key")
         self.day_key = date.fromisoformat(day) if day else None
         self.day_pnl = float(raw.get("day_pnl") or 0)
@@ -446,7 +448,7 @@ class RealtimeEngine:
                     "time": pos["time"],
                     "hour": pos["time"].hour,
                     "extreme": pos["entry"],
-                    "contracts": 1,
+                    "contracts": int(pos.get("volume") or self._n_contracts()),
                     "reason": "mt5",
                     "ticket": pos["ticket"],
                 }
@@ -483,13 +485,19 @@ class RealtimeEngine:
                 return False
         return True
 
+    def _n_contracts(self) -> int:
+        n = size_contracts(self.bank, self.lot)
+        self.max_contracts = max(int(self.max_contracts), n)
+        return n
+
     def _send_signal(self, broker: Mt5Broker, sig: Signal, entry: float) -> None:
         assert self._cfg is not None and self._bt is not None
         if self.mt5_info.get("demo") is False:
             raise RuntimeError("Recusado: conta real.")
+        n = self._n_contracts()
         stop, take = self._bt.risk.levels(sig.side, entry, None)
         order_sig = Signal(side=sig.side, entry=entry, stop=stop, take=take, reason=sig.reason, predicted=sig.predicted)
-        result = broker.send(order_sig, VOLUME)
+        result = broker.send(order_sig, float(n))
         retcode = int(result.get("retcode") or 0)
         if retcode not in {0, 10009, 10008}:
             raise RuntimeError(f"order_send retcode={retcode} {result.get('comment')}")
@@ -503,17 +511,17 @@ class RealtimeEngine:
             "time": now,
             "hour": now.hour,
             "extreme": float(entry),
-            "contracts": 1,
+            "contracts": n,
             "reason": sig.reason,
             "ticket": ticket,
         }
         self.trades_today += 1
-        self.max_contracts = 1
 
     def _open_paper(self, sig: Signal, entry: float, ts: datetime) -> None:
         assert self._bt is not None
         if self.source == "stream" and getattr(self._stream, "origin", None) == "file":
             return
+        n = self._n_contracts()
         stop, take = self._bt.risk.levels(sig.side, entry, None)
         self.position = {
             "side": sig.side,
@@ -523,12 +531,11 @@ class RealtimeEngine:
             "time": ts,
             "hour": ts.hour,
             "extreme": float(entry),
-            "contracts": 1,
+            "contracts": n,
             "reason": sig.reason,
             "ticket": None,
         }
         self.trades_today += 1
-        self.max_contracts = 1
 
     def _manage_open(self, broker: Mt5Broker | None, row: pd.Series, ts: datetime, now: datetime) -> None:
         assert self._bt is not None and self._session is not None and self.position is not None
@@ -551,7 +558,9 @@ class RealtimeEngine:
             return
         if broker is not None and ticket:
             try:
-                broker.close_position(int(ticket), self.position["side"], VOLUME)
+                broker.close_position(
+                    int(ticket), self.position["side"], float(self.position.get("contracts") or self._n_contracts())
+                )
             except Exception as exc:  # noqa: BLE001
                 self.error = f"close: {exc}"
             self._sync_position(broker, now)

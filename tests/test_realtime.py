@@ -170,6 +170,8 @@ def test_stream_is_paper_and_never_sends() -> None:
     sig = Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "teste")
     engine._open_paper(sig, 140_000.0, datetime(2026, 8, 24, 9, 15))
     assert engine.position is not None
+    assert engine.lot == "scaled"
+    assert engine.position["contracts"] == 1
     assert engine.position["stop"] == 139_900.0
     assert engine.position["take"] == 140_200.0
     assert engine.position.get("ticket") is None
@@ -180,6 +182,10 @@ def test_stream_is_paper_and_never_sends() -> None:
     assert engine.position is None
     assert engine.trades[-1]["result"] == "win"
     assert engine.trades[-1]["points"] == 200.0
+    engine.bank = 2000
+    engine._open_paper(sig, 140_000.0, datetime(2026, 8, 24, 9, 25))
+    assert engine.position is not None
+    assert engine.position["contracts"] == 2
 
 
 def test_stream_falls_back_to_local_csv() -> None:

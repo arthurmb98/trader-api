@@ -113,7 +113,7 @@ export function AoVivoPage() {
         </p>
         <h1 className="mt-3 font-display text-4xl font-bold">Operação em tempo real</h1>
         <p className="mt-2 max-w-3xl text-muted-foreground">
-          {status}. 5 min · 1 mini · best_candles_m5_1000_a
+          {status}. 5 min · lote crescente / R$ 1.000 · best_candles_m5_1000_a
           {isTodayStamp(snap.last_bar_time) ? ` · candle ${clock(snap.last_bar_time)}` : ' · sem candle de hoje'}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
