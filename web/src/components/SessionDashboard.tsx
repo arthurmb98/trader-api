@@ -189,8 +189,8 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
           value={brl(snap.bank)}
           hint={
             asLot(snap.lot) === 'scaled'
-              ? `${snap.contracts} mini agora · teto ${snap.max_contracts}`
-              : 'sempre 1 mini'
+              ? `${brl(snap.initial_bank)} inicial · ${snap.contracts} mini agora · teto ${snap.max_contracts}`
+              : `${brl(snap.initial_bank)} inicial · sempre 1 mini`
           }
         />
         <Kpi

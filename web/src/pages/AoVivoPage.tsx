@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SessionDashboard, SessionNav } from '@/components/SessionDashboard'
 import { Button } from '@/components/ui/button'
 import { EMPTY_SNAP, clock, type LiveSnap } from '@/lib/liveTypes'
@@ -24,6 +24,14 @@ export function AoVivoPage() {
   const [source, setSource] = useState<FeedKey>('mt5')
   const [offline, setOffline] = useState(false)
   const [busy, setBusy] = useState(false)
+  const pendingSource = useRef<FeedKey | null>(null)
+
+  const applySnap = (json: LiveSnap) => {
+    setSnap(json)
+    if (pendingSource.current) return
+    if (json.source === 'mt5' || json.source === 'stream') setSource(json.source)
+    setOffline(false)
+  }
 
   const pull = async () => {
     try {
@@ -33,9 +41,7 @@ export function AoVivoPage() {
         throw new Error(typeof json.detail === 'string' ? json.detail : 'API ao vivo indisponível')
       }
       const json = await readJson<LiveSnap>(res)
-      setSnap(json)
-      if (json.source === 'mt5' || json.source === 'stream') setSource(json.source)
-      setOffline(false)
+      applySnap(json)
     } catch (err) {
       setOffline(true)
       setSnap((prev) => ({
@@ -63,10 +69,11 @@ export function AoVivoPage() {
       })
       const json = await readJson<LiveSnap & { detail?: string }>(res)
       if (!res.ok) throw new Error(typeof json.detail === 'string' ? json.detail : 'falhou')
-      setSnap(json)
-      if (json.source === 'mt5' || json.source === 'stream') setSource(json.source)
-      setOffline(false)
+      if (pendingSource.current && json.source === pendingSource.current) pendingSource.current = null
+      applySnap(json)
+      if (!pendingSource.current) setOffline(false)
     } catch (err) {
+      pendingSource.current = null
       setSnap((prev) => ({ ...prev, error: err instanceof Error ? err.message : 'falhou' }))
     } finally {
       setBusy(false)
@@ -74,13 +81,21 @@ export function AoVivoPage() {
   }
 
   const changeSource = (next: FeedKey) => {
+    pendingSource.current = next
     setSource(next)
-    void post('/api/realtime/start', { source: next })
+    void post('/api/realtime/source', { source: next })
   }
 
   const mt5 = snap.mt5
   const wait = snap.wait_reason || 'aguardando_login'
   const mt5Down = source === 'mt5' && !mt5?.ready
+  const armarOff = busy
+    ? 'Armar off: POST em andamento (busy)'
+    : snap.running
+      ? 'Armar off: motor já armado (running=true). Use Pausar.'
+      : offline
+        ? 'Armar off: API offline'
+        : 'Armar livre'
   const status = offline
     ? 'API offline — rode localmente: python -m trader serve'
     : snap.running
@@ -122,7 +137,7 @@ export function AoVivoPage() {
             </>
           ) : (
             <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-              {snap.feed?.symbol || 'WIN'} · {snap.feed?.detail || 'aguardando candles'}
+              {snap.feed?.symbol || 'WIN'} · {snap.feed?.file || snap.feed?.detail || 'aguardando candles'}
             </span>
           )}
           {snap.next_gold ? (
@@ -139,7 +154,6 @@ export function AoVivoPage() {
             <select
               className="h-9 rounded-lg border border-border bg-elevated/60 px-3 text-sm"
               value={source}
-              disabled={busy}
               onChange={(e) => changeSource(e.target.value as FeedKey)}
             >
               <option value="mt5">MetaTrader 5</option>
@@ -157,11 +171,17 @@ export function AoVivoPage() {
               Zerar
             </Button>
           </div>
+          <p className="w-full font-mono text-[11px] text-muted-foreground">
+            debug · {armarOff} · running={String(snap.running)} · busy={String(busy)} · wait={wait} ·
+            source={source}
+          </p>
         </div>
         {mt5Down ? (
           <p className="mt-3 text-sm text-loss">MT5 fora do ar. Escolha Stream para continuar simulando.</p>
         ) : null}
-        {snap.error ? <p className="mt-3 text-sm text-loss">{snap.error}</p> : null}
+        {snap.error && !snap.error.startsWith('Stream sem candles') ? (
+          <p className="mt-3 text-sm text-loss">{snap.error}</p>
+        ) : null}
         {source === 'mt5' && wait === 'aguardando_login' && snap.playbook ? (
           <pre className="mt-4 max-w-3xl overflow-x-auto whitespace-pre-wrap rounded-2xl border border-border bg-elevated/50 p-4 text-sm text-muted-foreground">
             {snap.playbook}
@@ -173,7 +193,9 @@ export function AoVivoPage() {
         snap={snap}
         emptyHint={
           source === 'stream'
-            ? 'Nenhuma ordem paper ainda. Envie candles em POST /api/realtime/candles ou WIN_STREAM_URL.'
+            ? snap.feed?.ready
+              ? 'Nenhuma ordem paper ainda. O motor segue o horário de ouro nos candles da fonte.'
+              : 'Nenhuma ordem paper ainda. Sem fonte: POST /api/realtime/candles, WIN_STREAM_URL ou datasets/WIN_5min_test.csv.'
             : 'Nenhuma ordem ao vivo ainda. O motor espera o horário de ouro e um candle M5 novo.'
         }
       />

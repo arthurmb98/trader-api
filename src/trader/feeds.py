@@ -14,6 +14,11 @@ from trader.paths import DATASETS_DIR, ROOT
 from trader.ports import MarketFeed
 
 DEFAULT_FILE = DATASETS_DIR / "win_stream.json"
+FALLBACK_FILES = (
+    DATASETS_DIR / "win_stream.json",
+    DATASETS_DIR / "mt5_m5_week.csv",
+    DATASETS_DIR / "WIN_5min_test.csv",
+)
 
 
 def _ts(value: Any) -> datetime:
@@ -78,9 +83,12 @@ class StreamFeed(MarketFeed):
 
     def __init__(self) -> None:
         self.symbol = "WIN$"
+        self.origin = "none"
         self._ingested: list[Candle] = []
         self._error: str | None = None
         self._detail = "sem candles"
+        self._file_cache: list[Candle] | None = None
+        self._file_cache_key: tuple[str, float] | None = None
 
     def ingest(self, raw: Any) -> list[Candle]:
         name, candles = parse_stream_payload(raw, self.symbol)
@@ -90,12 +98,14 @@ class StreamFeed(MarketFeed):
         for candle in candles:
             by_ts[candle.timestamp] = candle
         self._ingested = sorted(by_ts.values(), key=lambda item: item.timestamp)
+        self.origin = "ingest"
         self._detail = f"ingest {len(self._ingested)} candles"
         self._error = None
         return self._ingested
 
     def clear(self) -> None:
         self._ingested = []
+        self.origin = "none"
         self._error = None
         self._detail = "sem candles"
 
@@ -103,13 +113,25 @@ class StreamFeed(MarketFeed):
         _load_dotenv()
         return (os.environ.get("WIN_STREAM_URL") or "").strip()
 
-    def _file(self) -> Path:
+    def _file(self) -> Path | None:
         _load_dotenv()
         raw = (os.environ.get("WIN_STREAM_FILE") or "").strip()
-        path = Path(raw) if raw else DEFAULT_FILE
-        if not path.is_absolute():
-            path = ROOT / path
-        return path
+        paths: list[Path] = []
+        if raw:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = ROOT / path
+            paths.append(path)
+        paths.extend(FALLBACK_FILES)
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path.resolve()) if path.exists() else str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.exists():
+                return path
+        return None
 
     def _token(self) -> str:
         _load_dotenv()
@@ -128,14 +150,20 @@ class StreamFeed(MarketFeed):
         name, candles = parse_stream_payload(body, self.symbol)
         if name:
             self.symbol = name
+        self.origin = "http"
         self._detail = f"http {len(candles)} candles"
         return candles
 
     def _from_file(self) -> list[Candle] | None:
         path = self._file()
-        if not path.exists():
+        if path is None:
             return None
-        text = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+        cache_key = (str(path), mtime)
+        if self._file_cache is not None and self._file_cache_key == cache_key:
+            self.origin = "file"
+            self._detail = f"file {path.name} {len(self._file_cache)} candles"
+            return self._file_cache
         if path.suffix.lower() == ".csv":
             from trader.data import load_candles
 
@@ -152,11 +180,13 @@ class StreamFeed(MarketFeed):
                 )
                 for _, row in frame.iterrows()
             ]
-            self._detail = f"file {path.name} {len(candles)} candles"
-            return candles
-        name, candles = parse_stream_payload(text, self.symbol)
-        if name:
-            self.symbol = name
+        else:
+            name, candles = parse_stream_payload(path.read_text(encoding="utf-8"), self.symbol)
+            if name:
+                self.symbol = name
+        self._file_cache = candles
+        self._file_cache_key = cache_key
+        self.origin = "file"
         self._detail = f"file {path.name} {len(candles)} candles"
         return candles
 
@@ -164,9 +194,11 @@ class StreamFeed(MarketFeed):
         del timeframe
         self.symbol = symbol or self.symbol
         self._error = None
+        self.origin = "none"
         candles: list[Candle] = []
         if self._ingested:
             candles = list(self._ingested)
+            self.origin = "ingest"
             self._detail = f"ingest {len(candles)} candles"
         else:
             try:
@@ -185,7 +217,8 @@ class StreamFeed(MarketFeed):
                 if file_rows:
                     candles = file_rows
         if not candles:
-            raise RuntimeError(self._error or "Stream sem candles. POST /api/realtime/candles ou WIN_STREAM_URL.")
+            self._detail = "sem candles"
+            return []
         return candles[-max(count, 1) :]
 
     def ready(self) -> bool:
@@ -193,15 +226,17 @@ class StreamFeed(MarketFeed):
             return True
         if self._url():
             return True
-        return self._file().exists()
+        return self._file() is not None
 
     def status(self) -> dict[str, Any]:
+        path = self._file()
         return {
             "ready": self.ready(),
             "symbol": self.symbol,
             "detail": self._detail,
             "error": self._error,
+            "origin": self.origin,
             "ingested": len(self._ingested),
             "url": bool(self._url()),
-            "file": str(self._file()) if self._file().exists() else None,
+            "file": path.name if path is not None else None,
         }

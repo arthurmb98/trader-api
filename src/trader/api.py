@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,7 +49,7 @@ class OrderRequest(BaseModel):
 
 
 class RealtimeStart(BaseModel):
-    source: str = "mt5"
+    source: str | None = None
 
 
 class StreamCandleIn(BaseModel):
@@ -308,21 +308,38 @@ def create_app() -> FastAPI:
         return get_realtime_engine().snapshot()
 
     @app.post("/api/realtime/candles")
-    def realtime_candles(body: StreamCandlesIn) -> dict[str, Any]:
+    async def realtime_candles(request: Request) -> dict[str, Any]:
         from trader.realtime import get_realtime_engine
 
-        payload = body.model_dump(exclude_none=True)
+        try:
+            payload = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, "JSON de candles inválido.") from exc
         try:
             return get_realtime_engine().ingest_candles(payload)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/realtime/source")
+    def realtime_source(body: RealtimeStart) -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        if not body.source:
+            raise HTTPException(400, "source deve ser mt5 ou stream")
+        try:
+            engine = get_realtime_engine()
+            engine.set_source(body.source)
+            engine._persist()
+            return engine.snapshot()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.post("/api/realtime/start")
-    async def realtime_start(body: RealtimeStart = RealtimeStart()) -> dict[str, Any]:
+    async def realtime_start(body: RealtimeStart | None = None) -> dict[str, Any]:
         from trader.realtime import get_realtime_engine
 
         try:
-            return await get_realtime_engine().start(source=body.source)
+            return await get_realtime_engine().start(source=body.source if body else None)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 

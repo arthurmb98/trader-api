@@ -16,7 +16,7 @@ from trader.mt5_session import (
     preferred_win_symbols,
     session_wait_reason,
 )
-from trader.feeds import parse_stream_payload
+from trader.feeds import StreamFeed, parse_stream_payload
 from trader.realtime import RealtimeEngine
 from trader.replay import load_named_config
 from trader.risk import RiskCalculator
@@ -154,6 +154,10 @@ def test_stream_is_paper_and_never_sends() -> None:
     assert [item["key"] for item in feeds["feeds"]] == ["mt5", "stream"]
     assert engine.source == "stream"
     assert engine.snapshot()["mode"] == "paper"
+    engine.set_source("mt5")
+    engine.set_source("stream")
+    assert engine.source == "stream"
+    assert engine.wait_reason in {"aguardando_candle", "pronto", "fora_do_ouro", "mercado_fechado"}
     assert engine.feed_info.get("ingested") == 40
 
     sig = Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "teste")
@@ -169,3 +173,24 @@ def test_stream_is_paper_and_never_sends() -> None:
     assert engine.position is None
     assert engine.trades[-1]["result"] == "win"
     assert engine.trades[-1]["points"] == 200.0
+
+
+def test_stream_falls_back_to_local_csv() -> None:
+    feed = StreamFeed()
+    candles = feed.last_closed_candles("WIN$", "m5", 80)
+    assert len(candles) == 80
+    assert feed.origin == "file"
+    assert feed.ready()
+    assert feed.status()["file"] == "WIN_5min_test.csv"
+
+    engine = RealtimeEngine()
+    engine.set_source("stream")
+    engine._prepare_policy()
+    engine.tick(now=datetime(2026, 8, 24, 1, 50))
+    assert engine.error is None
+    assert engine.trades == []
+    assert engine.position is None
+    assert engine.bank == engine.initial_bank == 1000
+    assert engine.snapshot()["net_pnl"] == 0
+    assert engine.snapshot()["mode"] == "paper"
+    assert engine._frame is not None and not engine._frame.empty

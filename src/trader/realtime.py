@@ -275,8 +275,10 @@ class RealtimeEngine:
             raise ValueError("source deve ser mt5 ou stream")
         self.source = key
         if key == "stream":
-            self.wait_reason = "aguardando_candle" if not self._stream.ready() else self.wait_reason
             self.error = None
+            self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS)
+            self.feed_info = self._stream.status()
+            self.wait_reason = "aguardando_candle"
 
     def _persist(self) -> None:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -626,24 +628,31 @@ class RealtimeEngine:
 
     def _tick_stream(self, now: datetime) -> None:
         assert self._session is not None and self._policy is not None
+        try:
+            candles = self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS)
+        except Exception as exc:  # noqa: BLE001
+            self.feed_info = self._stream.status()
+            self.wait_reason = "aguardando_candle"
+            if self._stream.origin != "none":
+                self.error = str(exc)
+            else:
+                self.error = None
+            return
+        self.feed_info = self._stream.status()
+        if not candles:
+            self.error = None
+            self.wait_reason = "aguardando_candle"
+            return
+        self._frame = frame_from_candles(candles, source_file="stream")
+        self.error = None
+        if self._frame is None or self._frame.empty:
+            self.wait_reason = "aguardando_candle"
+            return
         key = now.date()
         if key != self.day_key:
             self.day_key = key
             self.day_pnl = 0.0
             self.trades_today = 0
-        try:
-            candles = self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS)
-            self._frame = frame_from_candles(candles, source_file="stream")
-            self.feed_info = self._stream.status()
-            self.error = None
-        except Exception as exc:  # noqa: BLE001
-            self.error = str(exc)
-            self.feed_info = self._stream.status()
-            self.wait_reason = "aguardando_candle"
-            return
-        if self._frame is None or self._frame.empty:
-            self.wait_reason = "aguardando_candle"
-            return
         self.cursor = len(self._frame) - 1
         last = self._frame.iloc[-1]
         ts = pd.Timestamp(last["timestamp"]).to_pydatetime()
@@ -710,6 +719,7 @@ class RealtimeEngine:
     async def start(self, source: str | None = None) -> dict[str, Any]:
         if source is not None:
             self.set_source(source)
+            self._persist()
         return await self.arm()
 
     def stop(self) -> None:

@@ -109,6 +109,8 @@ export type LiveSnap = {
     symbol?: string | null
     detail?: string | null
     error?: string | null
+    origin?: string | null
+    file?: string | null
   }
   mt5?: Mt5Snap
 }

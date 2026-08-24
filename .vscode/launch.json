@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "trader",
+      "args": ["serve", "--host", "127.0.0.1", "--port", "8000", "--debug"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": true
+    },
+    {
+      "name": "Front debug",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "API + Front debug",
+      "configurations": ["API debug", "Front debug"]
+    }
+  ]
+}
