@@ -30,6 +30,8 @@ TRADE_MODE_FULL = 4
 ACCOUNT_TRADE_MODE_DEMO = 0
 LOOKBACK_BARS = 80
 DEFAULT_MAGIC = 20260818
+MT5_WMCMD_EXPERTS = 32851
+WM_COMMAND = 0x0111
 DEMO_SERVERS = (
     "GENIAL-DEMO",
     "Genial Investimentos-Demo",
@@ -223,6 +225,45 @@ def bar_is_today(bar_ts: datetime, now: datetime | None = None) -> bool:
 
 def bar_is_live(bar_ts: datetime, now: datetime | None = None, max_age_sec: int = 20 * 60) -> bool:
     return bar_is_today(bar_ts, now) and bar_is_fresh(bar_ts, now, max_age_sec)
+
+
+def enable_algo_trading() -> dict[str, Any]:
+    """Turn AutoTrading on via the MT5 toolbar command. No-op if the window is missing."""
+    if sys.platform != "win32":
+        return {"ok": False, "reason": "windows_only", "n": 0}
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def enum_cb(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title = ctypes.create_unicode_buffer(512)
+        klass = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title, 512)
+        user32.GetClassNameW(hwnd, klass, 256)
+        text = title.value or ""
+        cls = klass.value or ""
+        hit = (
+            "MetaQuotes::MetaTrader" in cls
+            or "MetaTrader 5" in text
+            or "MetaTrader5" in text
+            or ("Genial" in text and "Trader" in text)
+            or "GenialInvestimentos" in text
+        )
+        if hit:
+            found.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(enum_cb, 0)
+    if not found:
+        return {"ok": False, "reason": "janela_mt5_nao_encontrada", "n": 0}
+    for hwnd in found:
+        user32.PostMessageW(hwnd, WM_COMMAND, MT5_WMCMD_EXPERTS, 0)
+    return {"ok": True, "reason": "nudge", "n": len(found)}
 
 
 def planned_order(signal: Signal, entry: float, stop: float, take: float, volume: float = 1.0) -> dict[str, Any] | None:

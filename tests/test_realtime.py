@@ -11,6 +11,7 @@ from trader.mt5_session import (
     bar_is_fresh,
     bar_is_live,
     bar_is_today,
+    enable_algo_trading,
     front_win_contract,
     next_gold_window,
     pick_win_symbol,
@@ -109,6 +110,12 @@ def test_gold_hours_and_fresh_bar() -> None:
         session=session,
     ) == "conta_real"
     assert next_gold_window(night) == "2026-08-24T09:15"
+
+
+def test_enable_algo_trading_returns_status() -> None:
+    result = enable_algo_trading()
+    assert "ok" in result
+    assert "n" in result
 
 
 def test_filling_prefers_return() -> None:

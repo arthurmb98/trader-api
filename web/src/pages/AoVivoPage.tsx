@@ -8,7 +8,7 @@ const WAIT_LABEL: Record<string, string> = {
   aguardando_login: 'Aguardando o terminal MT5 Genial',
   conta_real: 'Conta real — simulando paper, sem envio no MT5',
   sem_simbolo: 'Sem WIN negociável no Market Watch (WINV26 + WIN$)',
-  autotrading_desligado: 'Ligue o AutoTrading no MT5 (Enviar demo ou Produção)',
+  autotrading_desligado: 'AutoTrading desligado — o motor tenta religar sozinho no terminal Genial',
   mercado_fechado: 'ARMADO · fora do pregão. Espera o próximo ouro (09:15) e opera sozinho',
   fora_do_ouro: 'ARMADO · almoço / fora do ouro. Espera 09:15–11:00 ou 14:30–17:00 e opera sozinho',
   fim_da_sessao: 'Sessão encerrada às 17:00',
@@ -21,6 +21,12 @@ type OrderMode = 'paper' | 'mt5' | 'prd'
 
 function isOrderMode(value: unknown): value is OrderMode {
   return value === 'paper' || value === 'mt5' || value === 'prd'
+}
+
+function realBank(mt5?: LiveSnap['mt5'] | null) {
+  if (!mt5) return null
+  const raw = mt5.bank ?? mt5.equity ?? mt5.balance ?? mt5.margin_free
+  return raw == null ? null : Number(raw)
 }
 
 function pushLog(line: string, extra?: unknown) {
@@ -43,10 +49,16 @@ export function AoVivoPage() {
   const [orderMode, setOrderMode] = useState<OrderMode>('paper')
   const [offline, setOffline] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [bankDialog, setBankDialog] = useState<{
+    amount: number
+    login: number | null
+    server: string | null
+  } | null>(null)
   const pendingMode = useRef<OrderMode | null>(null)
   const booted = useRef(false)
   const busyRef = useRef(false)
   const wantArmed = useRef<boolean | null>(null)
+  const toldEmptyBank = useRef(false)
 
   const applySnap = (json: LiveSnap, from: string) => {
     const next = { ...json }
@@ -167,6 +179,16 @@ export function AoVivoPage() {
     void post('/api/realtime/source', { order_mode: next, source: 'mt5' })
   }
 
+  useEffect(() => {
+    const amount = realBank(snap.mt5)
+    if (snap.mt5?.login == null || amount == null) return
+    if (amount <= 0 && !toldEmptyBank.current) {
+      toldEmptyBank.current = true
+      setBankDialog({ amount, login: snap.mt5.login, server: snap.mt5.server })
+    }
+    if (amount > 0) toldEmptyBank.current = false
+  }, [snap.mt5])
+
   const armNow = () => {
     if (orderMode === 'prd') {
       const ok = window.confirm(
@@ -191,6 +213,7 @@ export function AoVivoPage() {
   const paper = orderMode === 'paper'
   const prod = orderMode === 'prd'
   const armed = Boolean(snap.running || snap.armed)
+  const liveBank = realBank(mt5)
   const status = offline
     ? 'API offline — rode localmente: python -m trader serve'
     : !armed
@@ -253,11 +276,24 @@ export function AoVivoPage() {
           <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
             {mt5?.symbol || 'sem símbolo'} {mt5?.filling ? `· ${mt5.filling}` : ''}
           </span>
-          {mt5?.equity != null ? (
-            <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-              equity {brl(mt5.equity)}
-            </span>
-          ) : null}
+          <span
+            className={
+              mt5?.trade_allowed
+                ? 'rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain'
+                : 'rounded-lg bg-loss/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-loss'
+            }
+          >
+            {mt5?.trade_allowed ? 'AutoTrading on' : 'AutoTrading off'}
+          </span>
+          <span
+            className={
+              liveBank != null && liveBank > 0
+                ? 'rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold tabular-nums text-gain'
+                : 'rounded-lg bg-loss/15 px-2 py-1 text-xs font-semibold tabular-nums text-loss'
+            }
+          >
+            Banca real {liveBank == null ? '—' : brl(liveBank)}
+          </span>
           {snap.quote ? (
             <span className="rounded-lg border border-border px-2 py-1 text-xs tabular-nums text-muted-foreground">
               {snap.quote.bid.toFixed(0)} / {snap.quote.ask.toFixed(0)}
@@ -327,8 +363,8 @@ export function AoVivoPage() {
         ) : null}
         {prod ? (
           <p className="mt-3 text-sm text-loss">
-            Produção envia ordem real no Genial PRD no próximo sinal válido (09:15–11:00 e 14:30–17:00, não FLAT). Ligue
-            o AutoTrading.
+            Produção envia ordem real no Genial PRD no próximo sinal válido (09:15–11:00 e 14:30–17:00, não FLAT). O
+            motor mantém o AutoTrading ligado.
           </p>
         ) : null}
         {snap.error && !snap.error.startsWith('Stream sem candles') ? (
@@ -341,6 +377,29 @@ export function AoVivoPage() {
           </pre>
         ) : null}
       </section>
+
+      {bankDialog ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-5">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-elevated p-6 shadow-xl">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Conta real</p>
+            <h2 className="mt-2 font-display text-2xl font-bold">Banca no MT5</h2>
+            <p className="mt-3 text-muted-foreground">
+              {bankDialog.server || 'Genial'} · {bankDialog.login ?? 'sem login'}
+            </p>
+            <p className="mt-4 font-display text-4xl font-bold tabular-nums">
+              {brl(bankDialog.amount)}
+            </p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {bankDialog.amount <= 0
+                ? 'A conta real está sem banca (0). O ao vivo continua espelhando o valor do terminal.'
+                : 'Este é o saldo/equity lido agora no terminal.'}
+            </p>
+            <Button className="mt-6 w-full" onClick={() => setBankDialog(null)}>
+              Entendi
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <SessionDashboard
         snap={snap}

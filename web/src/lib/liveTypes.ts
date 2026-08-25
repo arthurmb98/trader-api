@@ -51,6 +51,10 @@ export type Mt5Snap = {
   trade_allowed: boolean
   balance: number | null
   equity: number | null
+  credit?: number | null
+  profit?: number | null
+  margin_free?: number | null
+  bank?: number | null
 }
 
 export type PositionSnap = {

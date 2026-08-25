@@ -183,9 +183,22 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
 
   return (
     <>
-      <section className="relative mx-auto grid max-w-6xl gap-3 px-5 py-4 sm:grid-cols-2 sm:px-8 lg:grid-cols-4">
+      <section className="relative mx-auto grid max-w-6xl gap-3 px-5 py-4 sm:grid-cols-2 sm:px-8 lg:grid-cols-5">
         <Kpi
-          label="Banca"
+          label="Banca MT5"
+          value={
+            snap.mt5?.bank != null || snap.mt5?.equity != null || snap.mt5?.balance != null
+              ? brl(Number(snap.mt5.bank ?? snap.mt5.equity ?? snap.mt5.balance))
+              : '—'
+          }
+          hint={
+            snap.mt5?.login
+              ? `${snap.mt5.server || 'MT5'} · ${snap.mt5.login} · ${snap.mt5.trade_allowed ? 'AutoTrading on' : 'AutoTrading off'}`
+              : 'aguardando terminal'
+          }
+        />
+        <Kpi
+          label="Banca paper"
           value={brl(snap.bank)}
           hint={
             asLot(snap.lot) === 'scaled'

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from trader.domain import Candle, Side, Signal
-from trader.mt5_session import DEMO_SERVERS, SymbolCandidate, server_looks_demo
+from trader.mt5_session import DEMO_SERVERS, SymbolCandidate, enable_algo_trading, server_looks_demo
 from trader.ports import Broker
 
 
@@ -31,6 +31,7 @@ class Mt5Broker(Broker):
         self.filling = filling.upper()
         self.comment = comment
         self._mt5 = None
+        self._last_at_nudge = 0.0
 
     def connect(
         self,
@@ -193,19 +194,49 @@ class Mt5Broker(Broker):
                 "name": None,
                 "balance": None,
                 "equity": None,
+                "credit": None,
+                "profit": None,
+                "margin_free": None,
+                "bank": None,
             }
         trade_mode = int(getattr(acc, "trade_mode", -1))
+        equity = float(getattr(acc, "equity", 0) or 0)
+        balance = float(getattr(acc, "balance", 0) or 0)
+        credit = float(getattr(acc, "credit", 0) or 0)
+        profit = float(getattr(acc, "profit", 0) or 0)
+        margin_free = float(getattr(acc, "margin_free", 0) or 0)
+        bank = equity if equity else balance
+        if not bank:
+            bank = margin_free if margin_free else credit
         return {
             "account": True,
             "demo": trade_mode == 0,
             "login": int(acc.login),
             "server": str(acc.server),
             "name": str(acc.name),
-            "balance": float(acc.balance),
-            "equity": float(acc.equity),
+            "balance": balance,
+            "equity": equity,
+            "credit": credit,
+            "profit": profit,
+            "margin_free": margin_free,
+            "bank": float(bank),
             "trade_mode": trade_mode,
             "leverage": int(getattr(acc, "leverage", 0) or 0),
         }
+
+    def ensure_algo_trading(self) -> dict[str, Any]:
+        term = self.terminal_payload()
+        if term.get("trade_allowed"):
+            return {"ok": True, "already": True, "trade_allowed": True}
+        import time
+
+        now = time.monotonic()
+        if now - self._last_at_nudge < 5:
+            return {"ok": False, "reason": "cooldown", "trade_allowed": False}
+        self._last_at_nudge = now
+        result = enable_algo_trading()
+        result["trade_allowed"] = bool(self.terminal_payload().get("trade_allowed"))
+        return result
 
     def terminal_payload(self) -> dict[str, Any]:
         mt5 = self._require()

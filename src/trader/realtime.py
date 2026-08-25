@@ -122,6 +122,10 @@ def empty_realtime_snapshot() -> dict[str, Any]:
             "trade_allowed": False,
             "balance": None,
             "equity": None,
+            "credit": None,
+            "profit": None,
+            "margin_free": None,
+            "bank": None,
         },
     }
 
@@ -491,6 +495,13 @@ class RealtimeEngine:
             if self.position is not None and self.position.get("ticket") and self.order_mode == "paper":
                 self.position = None
                 self._mt5_profit = None
+        if not term.get("trade_allowed"):
+            try:
+                nudged = self._broker.ensure_algo_trading()
+                if nudged.get("trade_allowed"):
+                    term = self._broker.terminal_payload()
+            except Exception:  # noqa: BLE001
+                pass
         self.mt5_info = {
             "ready": bool(acc.get("account") and symbol),
             "demo": acc.get("demo"),
@@ -501,6 +512,10 @@ class RealtimeEngine:
             "trade_allowed": bool(term.get("trade_allowed")),
             "balance": acc.get("balance"),
             "equity": acc.get("equity"),
+            "credit": acc.get("credit"),
+            "profit": acc.get("profit"),
+            "margin_free": acc.get("margin_free"),
+            "bank": acc.get("bank"),
         }
         if not acc.get("account"):
             self.wait_reason = "aguardando_login"
