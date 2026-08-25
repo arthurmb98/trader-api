@@ -80,7 +80,7 @@ class Trade:
     result: str
     reason: str
     hour: int
-    contracts: int = 1
+    contracts: float = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {

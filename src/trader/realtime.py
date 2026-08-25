@@ -38,7 +38,7 @@ from trader.risk import RiskCalculator
 SESSION_PATH = RESULTS_DIR / "realtime_session.json"
 CONFIG_NAME = "best_candles_m5_1000_a"
 DEFAULT_BANK = 1000.0
-POLL_SEC = 10.0
+POLL_SEC = 0.5
 
 
 def load_live_config() -> AppConfig:
@@ -56,8 +56,8 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "config": CONFIG_NAME,
         "case": "last_candles",
         "timeframe": "m5",
-        "source": "stream",
-        "order_mode": "paper",
+        "source": "mt5",
+        "order_mode": "mt5",
         "interval_sec": POLL_SEC,
         "window_start": None,
         "window_end": None,
@@ -89,10 +89,13 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "periods": live_period_stats([], None, None),
         "signals": [],
         "candles": [],
+        "quote": None,
+        "open_pnl": 0.0,
+        "skip_reason": None,
         "wait_reason": "mercado_fechado",
         "next_gold": next_gold_window(),
         "playbook": None,
-        "mode": "paper",
+        "mode": "mt5",
         "feed": {"ready": False, "symbol": None, "detail": None, "error": None},
         "mt5": {
             "ready": False,
@@ -115,8 +118,8 @@ class RealtimeEngine:
         self.config_name = CONFIG_NAME
         self.case = "last_candles"
         self.timeframe = "m5"
-        self.source = "stream"
-        self.order_mode = "paper"
+        self.source = "mt5"
+        self.order_mode = "mt5"
         self.interval_sec = POLL_SEC
         self.running = False
         self.done = False
@@ -153,13 +156,19 @@ class RealtimeEngine:
         self._session: SessionFilter | None = None
         self._broker: Mt5Broker | None = None
         self._ticks_since_save = 0
+        self._ticks_mt5 = 0
+        self.quote: dict[str, Any] | None = None
+        self._enter_now = False
+        self._mt5_profit: float | None = None
+        self._demo_tried = False
+        self.demo_probe: dict[str, Any] | None = None
+        self.ui_logs: list[str] = []
 
     def snapshot(self) -> dict[str, Any]:
         wins = [t for t in self.trades if t.get("result") == "win"]
         n = len(self.trades)
         days = {str(t.get("exit_time", ""))[:10] for t in self.trades if t.get("exit_time")}
         n_days = max(len(days), 1) if n else 0
-        net = round(self.bank - self.initial_bank, 2)
         today_key = str(self.day_key) if self.day_key else (self.last_bar_time or "")[:10]
         today_closed = sum(
             float(t.get("pnl") or 0)
@@ -182,12 +191,27 @@ class RealtimeEngine:
         except Exception:  # noqa: BLE001
             periods = live_period_stats(self.trades, None, None)
         avg_daily = float((periods.get("avg") or {}).get("daily", {}).get("avg") or 0.0)
-        live_last = False
-        if self.last_bar_time:
-            try:
-                live_last = bar_is_live(datetime.fromisoformat(self.last_bar_time), datetime.now())
-            except ValueError:
-                live_last = False
+        open_meta = self._open_mark()
+        open_pnl = float(open_meta.get("pnl") or 0.0)
+        pos = _position_dict(self.position)
+        if pos is not None:
+            pos.update(open_meta)
+        candles = list(self.candles_tail)
+        if self.quote and self.last_tick:
+            candles = [
+                *candles,
+                {
+                    "t": self.last_tick,
+                    "open": float(self.quote["last"]),
+                    "high": float(self.quote["ask"] or self.quote["last"]),
+                    "low": float(self.quote["bid"] or self.quote["last"]),
+                    "close": float(self.quote["last"]),
+                },
+            ]
+        equity = list(self.equity[-400:])
+        if self.last_tick:
+            equity = [*equity, {"t": self.last_tick, "bank": round(self.bank + open_pnl, 2)}]
+        open_row = self._open_trade_row(pos, open_meta)
         return {
             "running": self.running,
             "done": self.done,
@@ -202,14 +226,14 @@ class RealtimeEngine:
             "window_end": None,
             "start": None,
             "end": None,
-            "last_tick": self.last_tick if live_last else None,
-            "last_bar_time": self.last_bar_time if live_last else None,
+            "last_tick": self.last_tick,
+            "last_bar_time": self.last_bar_time,
             "cursor": self.cursor,
             "n_bars": 0 if self._frame is None else int(len(self._frame)),
             "initial_bank": round(self.initial_bank, 2),
-            "bank": round(self.bank, 2),
-            "net_pnl": net,
-            "today_pnl": round(today_closed, 2),
+            "bank": round(self.bank + open_pnl, 2),
+            "net_pnl": round(self.bank - self.initial_bank + open_pnl, 2),
+            "today_pnl": round(today_closed + open_pnl, 2),
             "avg_daily": avg_daily,
             "n_days": n_days,
             "n_trades": n,
@@ -218,22 +242,28 @@ class RealtimeEngine:
             "max_drawdown": round(self.max_dd, 2),
             "max_drawdown_pct": round(100.0 * self.max_dd / self.initial_bank, 1) if self.initial_bank else 0.0,
             "lot": self.lot,
-            "contracts": size_contracts(self.bank, self.lot),
-            "max_contracts": int(self.max_contracts),
+            "contracts": self._n_contracts(),
+            "max_contracts": self.max_contracts,
             "signal": _signal_dict(self.last_signal),
-            "position": _position_dict(self.position),
-            "trades": list(reversed(self.trades[-80:])),
-            "equity": self.equity[-400:],
+            "position": pos,
+            "trades": ([open_row] if open_row else []) + list(reversed(self.trades[-80:])),
+            "equity": equity,
             "daily": daily_rows,
             "periods": periods,
             "signals": list(reversed(self.signals[-40:])),
-            "candles": self.candles_tail if live_last else [],
+            "candles": candles,
+            "quote": dict(self.quote) if self.quote else None,
+            "open_pnl": round(open_pnl, 2),
+            "skip_reason": self._skip_reason(),
             "wait_reason": self.wait_reason,
             "next_gold": next_gold_window(),
-            "playbook": DEMO_PLAYBOOK if self.order_mode == "mt5" and self.wait_reason == "aguardando_login" else None,
+            "playbook": DEMO_PLAYBOOK if self.wait_reason == "aguardando_login" else None,
             "mode": self.order_mode,
             "feed": dict(self.feed_info),
             "mt5": dict(self.mt5_info),
+            "armed": bool(self.running and self._task is not None and not self._task.done()),
+            "can_send": bool(self.order_mode == "mt5" and self.mt5_info.get("demo") is True),
+            "demo_probe": dict(self.demo_probe) if self.demo_probe else None,
         }
 
     def status(self) -> dict[str, Any]:
@@ -261,13 +291,13 @@ class RealtimeEngine:
             "feeds": [
                 {
                     "key": "mt5",
-                    "label": "Enviar (MT5 demo)",
-                    "ready": bool(self.mt5_info.get("ready")),
-                    "mode": "mt5",
+                    "label": f"MT5 {self.mt5_info.get('symbol') or 'WIN'}",
+                    "ready": bool(self.mt5_info.get("symbol")),
+                    "mode": self.order_mode,
                 },
                 {
                     "key": "stream",
-                    "label": "Simular (stream)",
+                    "label": "Stream (URL/POST)",
                     "ready": self._stream.ready(live_only=True),
                     "mode": "paper",
                 },
@@ -284,24 +314,39 @@ class RealtimeEngine:
         if key not in {"paper", "mt5"}:
             raise ValueError("order_mode deve ser paper ou mt5")
         self.order_mode = key
+        self._enter_now = True
         if key == "paper":
+            if self.position is not None and self.position.get("ticket"):
+                self.position = None
+                self._mt5_profit = None
+            if self.source != "stream":
+                self.source = "mt5"
+            if not self.mt5_info.get("login"):
+                self.wait_reason = "aguardando_login"
+            self.error = None
+            return
+        if self.position is not None and not self.position.get("ticket"):
+            self.position = None
+        self.source = "mt5"
+        if not self.mt5_info.get("login"):
+            self.wait_reason = "aguardando_login"
+
+    def set_source(self, source: str) -> None:
+        key = str(source or "mt5").strip().lower()
+        if key not in {"mt5", "stream"}:
+            raise ValueError("source deve ser mt5 ou stream")
+        if key == "stream":
             self.source = "stream"
+            self.order_mode = "paper"
             self.error = None
             self._stream.last_closed_candles(self._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False)
             self.feed_info = self._stream.status()
             self.wait_reason = "aguardando_candle"
-        else:
-            self.source = "mt5"
-            self.wait_reason = "aguardando_login"
-
-    def set_source(self, source: str) -> None:
-        key = str(source or "stream").strip().lower()
-        if key not in {"mt5", "stream"}:
-            raise ValueError("source deve ser mt5 ou stream")
-        if key == "stream":
-            self.set_order_mode("paper")
             return
-        self.set_order_mode("mt5")
+        self.source = "mt5"
+        if self.order_mode not in {"paper", "mt5"}:
+            self.order_mode = "mt5"
+        self.wait_reason = "aguardando_login"
 
     def _persist(self) -> None:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -342,9 +387,9 @@ class RealtimeEngine:
             self.order_mode = "paper"
         if raw.get("source") in {"mt5", "stream"}:
             self.source = str(raw["source"])
-        if self.order_mode == "paper":
-            self.source = "stream"
-        else:
+        if self.order_mode == "mt5":
+            self.source = "mt5"
+        elif self.source not in {"mt5", "stream"}:
             self.source = "mt5"
         self.processed_bar = raw.get("processed_bar")
         self.last_bar_time = raw.get("last_bar_time")
@@ -420,8 +465,13 @@ class RealtimeEngine:
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
                 symbol = None
+        if acc.get("demo") is False:
+            self.error = None
+            if self.position is not None and self.position.get("ticket") and self.order_mode == "paper":
+                self.position = None
+                self._mt5_profit = None
         self.mt5_info = {
-            "ready": bool(acc.get("account") and acc.get("demo") and symbol),
+            "ready": bool(acc.get("account") and symbol),
             "demo": acc.get("demo"),
             "login": acc.get("login"),
             "server": acc.get("server"),
@@ -434,10 +484,6 @@ class RealtimeEngine:
         if not acc.get("account"):
             self.wait_reason = "aguardando_login"
             return None
-        if acc.get("demo") is False:
-            self.wait_reason = "conta_real"
-            self.error = "Conta real no MT5. Troque para a demo para o robô enviar ordem."
-            return self._broker
         return self._broker
 
     def _refresh_candles_tail(self) -> None:
@@ -481,17 +527,22 @@ class RealtimeEngine:
                     "time": pos["time"],
                     "hour": pos["time"].hour,
                     "extreme": pos["entry"],
-                    "contracts": int(pos.get("volume") or self._n_contracts()),
+                    "contracts": float(pos.get("volume") or self._n_contracts()),
                     "reason": "mt5",
                     "ticket": pos["ticket"],
                 }
             else:
                 self.position["ticket"] = pos["ticket"]
+                self.position["contracts"] = float(
+                    pos.get("volume") or self.position.get("contracts") or self._n_contracts()
+                )
                 if pos["stop"]:
                     self.position["stop"] = pos["stop"]
                 if pos["take"]:
                     self.position["take"] = pos["take"]
+            self._mt5_profit = float(pos.get("profit") or 0)
             return
+        self._mt5_profit = None
         if self.position is not None:
             ticket = self.position.get("ticket")
             deal = broker.closing_deal(int(ticket)) if ticket else None
@@ -518,10 +569,97 @@ class RealtimeEngine:
                 return False
         return True
 
-    def _n_contracts(self) -> int:
-        n = size_contracts(self.bank, self.lot)
-        self.max_contracts = max(int(self.max_contracts), n)
+    def _n_contracts(self) -> float:
+        n = float(size_contracts(self.bank, self.lot))
+        self.max_contracts = max(float(self.max_contracts), n)
         return n
+
+    def _is_buy(self, side: Any) -> bool:
+        return side is Side.BUY or str(side) == "BUY"
+
+    def _mark_price(self, side: Any | None = None) -> float | None:
+        if not self.quote:
+            return None
+        if side is not None:
+            return float(self.quote["bid"] if self._is_buy(side) else self.quote["ask"])
+        return float(self.quote["last"])
+
+    def _open_mark(self) -> dict[str, Any]:
+        if self.position is None:
+            return {}
+        side = self.position["side"]
+        entry = float(self.position["entry"])
+        stop = float(self.position["stop"])
+        take = float(self.position["take"])
+        n = float(self.position.get("contracts") or self._n_contracts())
+        mark = self._mark_price(side)
+        if mark is None and self._frame is not None and not self._frame.empty:
+            mark = float(self._frame.iloc[-1]["Fechamento"])
+        if mark is None:
+            return {}
+        points = (mark - entry) if self._is_buy(side) else (entry - mark)
+        if self._mt5_profit is not None and self.order_mode == "mt5":
+            pnl = float(self._mt5_profit)
+        else:
+            pv = float(self._cfg.account.point_value) if self._cfg else 0.2
+            pnl = points * pv * n
+        to_stop = (mark - stop) if self._is_buy(side) else (stop - mark)
+        to_take = (take - mark) if self._is_buy(side) else (mark - take)
+        return {
+            "mark": round(mark, 4),
+            "pnl": round(pnl, 2),
+            "points": round(points, 4),
+            "to_stop": round(to_stop, 4),
+            "to_take": round(to_take, 4),
+        }
+
+    def _skip_reason(self) -> str | None:
+        sig = self.last_signal
+        if self.position is not None:
+            held = self.position["side"]
+            held_s = held.value if isinstance(held, Side) else str(held)
+            if sig is not None and sig.side is not Side.FLAT:
+                return f"Sinal {sig.side.value} não virou ordem: já tem {held_s} aberta até stop/alvo."
+            return f"Já tem {held_s} aberta. Novos sinais não abrem outra ordem até stop/alvo."
+        if sig is None or sig.side is Side.FLAT:
+            if sig is not None and sig.reason == "mercado_estranho":
+                return "FLAT mercado_estranho: o filtro ml_guard recusou o candle. Isso não vira ordem."
+            return None
+        if self.wait_reason and self.wait_reason not in {"pronto"}:
+            return f"Sinal {sig.side.value} sem ordem: {self.wait_reason}."
+        return None
+
+    def _open_trade_row(self, pos: dict[str, Any] | None, open_meta: dict[str, Any]) -> dict[str, Any] | None:
+        if not pos:
+            return None
+        entry = float(pos["entry"])
+        mark = float(open_meta.get("mark") or entry)
+        return {
+            "side": pos["side"],
+            "entry_time": pos.get("time"),
+            "exit_time": None,
+            "entry": entry,
+            "exit": mark,
+            "points": float(open_meta.get("points") or 0),
+            "pnl": float(open_meta.get("pnl") or 0),
+            "result": "open",
+            "reason": str(pos.get("reason") or "aberta"),
+            "contracts": pos.get("contracts"),
+        }
+
+    def _remember_signal(self, sig: Signal, ts: datetime) -> None:
+        packed = {"t": ts.isoformat(), **(_signal_dict(sig) or {})}
+        last = self.signals[-1] if self.signals else None
+        if (
+            last
+            and last.get("t") == packed["t"]
+            and last.get("side") == packed.get("side")
+            and last.get("reason") == packed.get("reason")
+        ):
+            self.signals[-1] = packed
+            return
+        self.signals.append(packed)
+        self.signals = self.signals[-200:]
 
     def _send_signal(self, broker: Mt5Broker, sig: Signal, entry: float) -> None:
         assert self._cfg is not None and self._bt is not None
@@ -549,6 +687,7 @@ class RealtimeEngine:
             "contracts": n,
             "reason": sig.reason,
             "ticket": ticket,
+            "entry_bar": self.last_bar_time,
         }
         self.trades_today += 1
 
@@ -569,6 +708,7 @@ class RealtimeEngine:
             "contracts": n,
             "reason": sig.reason,
             "ticket": None,
+            "entry_bar": self.last_bar_time,
         }
         self.trades_today += 1
 
@@ -604,6 +744,22 @@ class RealtimeEngine:
             return
         self._record_close(ts, float(exit_price), reason)
 
+    def _paper_manage_row(self, last: pd.Series, mark: float | None) -> pd.Series:
+        """Do not use the entry bar's historical high/low — that is lookahead and instant-closes paper fills."""
+        if self.position is None:
+            return last
+        if self.position.get("ticket"):
+            return last
+        if self.position.get("entry_bar") != self.last_bar_time:
+            return last
+        px = float(mark if mark is not None else last["Fechamento"])
+        row = last.copy()
+        row["Abertura"] = px
+        row["Máximo"] = px
+        row["Mínimo"] = px
+        row["Fechamento"] = px
+        return row
+
     def tick(self, now: datetime | None = None) -> None:
         now = now or datetime.now()
         self.last_tick = now.isoformat(timespec="seconds")
@@ -616,9 +772,13 @@ class RealtimeEngine:
                 return
         assert self._session is not None and self._policy is not None
         self._keep_today_only(now.date())
-        if self.order_mode == "paper" or self.source == "stream":
+        if self.source == "stream":
             self._tick_stream(now)
             return
+        self._tick_mt5(now)
+
+    def _tick_mt5(self, now: datetime) -> None:
+        assert self._session is not None and self._policy is not None
         broker = self._ensure_broker()
         if broker is None:
             return
@@ -627,27 +787,40 @@ class RealtimeEngine:
             self.day_key = key
             self.day_pnl = 0.0
             self.trades_today = 0
-        try:
-            self._sync_position(broker, now)
-        except Exception as exc:  # noqa: BLE001
-            self.error = str(exc)
-        try:
-            candles = broker.last_closed_candles(broker.symbol, "m5", LOOKBACK_BARS)
-            self._frame = frame_from_candles(candles, source_file="mt5")
-        except Exception as exc:  # noqa: BLE001
-            self.error = str(exc)
-            self.wait_reason = session_wait_reason(
-                connected=True,
-                account=bool(self.mt5_info.get("login")),
-                demo=self.mt5_info.get("demo"),
-                symbol=self.mt5_info.get("symbol"),
-                trade_allowed=bool(self.mt5_info.get("trade_allowed")),
-                now=now,
-                last_bar=None,
-                in_position=self.position is not None,
-                session=self._session,
-            )
+        send = self.order_mode == "mt5" and self.mt5_info.get("demo") is True
+        if not self.mt5_info.get("symbol") and not broker.symbol:
+            self.wait_reason = "sem_simbolo"
             return
+        if send:
+            try:
+                self._sync_position(broker, now)
+            except Exception as exc:  # noqa: BLE001
+                self.error = str(exc)
+        try:
+            self.quote = broker.quote() if hasattr(broker, "quote") else None
+        except Exception:  # noqa: BLE001
+            self.quote = None
+        self._ticks_mt5 += 1
+        need_bars = self._frame is None or self._frame.empty or self._ticks_mt5 == 1 or self._ticks_mt5 % 4 == 0
+        if need_bars:
+            try:
+                candles = broker.last_closed_candles(broker.symbol, "m5", LOOKBACK_BARS)
+                self._frame = frame_from_candles(candles, source_file="mt5")
+            except Exception as exc:  # noqa: BLE001
+                self.error = str(exc)
+                self.wait_reason = session_wait_reason(
+                    connected=True,
+                    account=bool(self.mt5_info.get("login")),
+                    demo=True if not send else self.mt5_info.get("demo"),
+                    symbol=self.mt5_info.get("symbol"),
+                    trade_allowed=True if not send else bool(self.mt5_info.get("trade_allowed")),
+                    now=now,
+                    last_bar=None,
+                    in_position=self.position is not None,
+                    session=self._session,
+                )
+                if self._frame is None or self._frame.empty:
+                    return
         if self._frame is None or self._frame.empty:
             self.wait_reason = "aguardando_candle"
             return
@@ -658,36 +831,59 @@ class RealtimeEngine:
             ts = ts.replace(tzinfo=None)
         self.last_bar_time = ts.isoformat()
         self._refresh_candles_tail()
+        mark = self._mark_price()
+        if mark is not None:
+            last = last.copy()
+            last["Máximo"] = max(float(last["Máximo"]), mark)
+            last["Mínimo"] = min(float(last["Mínimo"]), mark)
+            last["Fechamento"] = mark
+        self.feed_info = {
+            "ready": True,
+            "symbol": broker.symbol,
+            "detail": (
+                f"mt5 {broker.symbol} {len(self._frame)} M5"
+                + (f" · {mark:.0f}" if mark is not None else "")
+            ),
+            "error": None,
+            "origin": "mt5",
+        }
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
-            demo=self.mt5_info.get("demo"),
-            symbol=self.mt5_info.get("symbol"),
-            trade_allowed=bool(self.mt5_info.get("trade_allowed")),
+            demo=True if not send else self.mt5_info.get("demo"),
+            symbol=self.mt5_info.get("symbol") or broker.symbol,
+            trade_allowed=True if not send else bool(self.mt5_info.get("trade_allowed")),
             now=now,
-            last_bar=ts,
+            last_bar=ts if bar_is_live(ts, now) else None,
             in_position=self.position is not None,
             session=self._session,
         )
         if self.position is not None:
-            self._manage_open(broker, last, ts, now)
+            self._manage_open(broker if send else None, self._paper_manage_row(last, mark), now, now)
+        live_bar = bar_is_live(ts, now)
+        sig = self._policy.from_candles(self._frame)
+        self.last_signal = sig
+        self._remember_signal(sig, ts)
         new_bar = self.last_bar_time != self.processed_bar
-        if new_bar and self._can_enter(now, live_mt5=True) and bar_is_live(ts, now):
-            history = self._frame
-            sig = self._policy.from_candles(history)
-            self.last_signal = sig
-            self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
-            self.signals = self.signals[-200:]
-            if sig.side is not Side.FLAT:
-                try:
-                    tick = broker._require().symbol_info_tick(broker.symbol)
-                    entry = float(tick.ask if sig.side is Side.BUY else tick.bid) if tick else float(last["Fechamento"])
-                    plan = planned_order(sig, entry, *RiskCalculator(self._cfg).levels(sig.side, entry, None))
-                    if plan:
+        if not self._session.allows(now):
+            self._enter_now = True
+        try_enter = new_bar or self._enter_now
+        if try_enter and self._can_enter(now, live_mt5=send) and live_bar and sig.side is not Side.FLAT:
+            try:
+                entry = float(mark if mark is not None else last["Fechamento"])
+                if send and self.quote:
+                    entry = float(self.quote["ask"] if sig.side is Side.BUY else self.quote["bid"])
+                plan = planned_order(sig, entry, *RiskCalculator(self._cfg).levels(sig.side, entry, None))
+                if plan:
+                    if send:
                         self._send_signal(broker, sig, entry)
-                        self.error = None
-                except Exception as exc:  # noqa: BLE001
-                    self.error = str(exc)
+                    else:
+                        self._open_paper(sig, entry, now)
+                    self.error = None
+            except Exception as exc:  # noqa: BLE001
+                self.error = str(exc)
+        if self._session.allows(now):
+            self._enter_now = False
         if new_bar:
             self.processed_bar = self.last_bar_time
         self._ticks_since_save += 1
@@ -762,7 +958,7 @@ class RealtimeEngine:
             self.candles_tail = []
             return
         if self.position is not None:
-            self._manage_open(None, last, ts, now)
+            self._manage_open(None, self._paper_manage_row(last, float(last["Fechamento"])), ts, now)
         new_bar = self.last_bar_time != self.processed_bar
         if new_bar and self._can_enter(now, live_mt5=False) and live_bar:
             sig = self._policy.from_candles(self._frame)
@@ -774,7 +970,6 @@ class RealtimeEngine:
                 stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
                 if planned_order(sig, entry, stop, take):
                     self._open_paper(sig, entry, ts)
-                    self._manage_open(None, last, ts, now)
         if new_bar:
             self.processed_bar = self.last_bar_time
         self._ticks_since_save += 1
@@ -785,9 +980,14 @@ class RealtimeEngine:
     async def run_loop(self) -> None:
         try:
             while self.running:
-                async with self._lock:
-                    await asyncio.to_thread(self.tick)
-                await asyncio.sleep(max(1.0, float(self.interval_sec)))
+                try:
+                    async with self._lock:
+                        await asyncio.to_thread(self.tick)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    self.error = str(exc)
+                await asyncio.sleep(max(0.5, float(self.interval_sec)))
         except asyncio.CancelledError:
             self.running = False
             raise
@@ -799,12 +999,19 @@ class RealtimeEngine:
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
         if self.running and self._task and not self._task.done():
+            self._enter_now = True
             return self.snapshot()
         self.running = True
         self.done = False
+        self._enter_now = True
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(self.run_loop())
         return self.snapshot()
+
+    def note_ui(self, line: str) -> None:
+        stamp = datetime.now().isoformat(timespec="seconds")
+        self.ui_logs.append(f"{stamp} {line}")
+        self.ui_logs = self.ui_logs[-80:]
 
     async def start(self, source: str | None = None, order_mode: str | None = None) -> dict[str, Any]:
         if order_mode is not None:

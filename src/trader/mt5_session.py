@@ -30,21 +30,26 @@ TRADE_MODE_FULL = 4
 ACCOUNT_TRADE_MODE_DEMO = 0
 LOOKBACK_BARS = 80
 DEFAULT_MAGIC = 20260818
+DEMO_SERVERS = (
+    "GENIAL-DEMO",
+    "Genial Investimentos-Demo",
+    "GenialInvestimentos-Demo",
+    "GenialInvestimentos-DEMO",
+    "CLEAR-DEMO",
+    "CLEAR CTVM-DEMO",
+    "Clear CTVM-Demo",
+)
 
-DEMO_PLAYBOOK = """WIN na B3 não existe na demo genérica da MetaQuotes.
-Abra uma conta demo de corretora brasileira e deixe o MT5 logado:
+DEMO_PLAYBOOK = """WIN na B3: deixe o MT5 da Genial aberto e já logado na DEMO.
 
-  1. Cadastro: https://cadastro.clear.com.br (CPF, documento, endereço).
-     Se já for cliente XP/Rico/Clear, pule para o passo 2.
-  2. Contrate MetaTrader 5 Demo em Plataformas (~R$ 9,90/mês).
-  3. Instale o MT5 DEMO da Clear (não o instalador genérico).
-  4. Arquivo -> Abrir uma conta -> CLEAR CTVM -> conta existente -> CLEAR DEMO.
-  5. Market Watch: adicione o vencimento atual (WINV26 em ago/2026) e WIN$ se existir.
-  6. Ferramentas -> Opcoes -> Expert Advisors: permitir Algo Trading.
-     Deixe o botão AutoTrading verde.
-  7. Opcional: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER no ambiente local (não no git).
+  1. Terminal Genial (ou Clear) logado — canto inferior direito com o número da conta demo.
+  2. Ferramentas -> Opções -> Expert Advisors: permitir Algo Trading. AutoTrading verde.
+  3. Market Watch: vencimento da frente (WINV26 em ago/2026) e WIN$ se existir.
+     Abra um gráfico M5 desse contrato.
+  4. Python e MT5 no mesmo usuário Windows (os dois sem 'Executar como administrador').
+  5. Recarregue http://127.0.0.1:5173/ao-vivo. Enviar manda ordem só na demo.
 
-A API só se anexa ao terminal já aberto. Sem login demo ela fica armada e espera.
+Login e senha no .env são opcionais se o terminal já está logado. Não commite. Conta real é recusada.
 """
 
 
@@ -68,6 +73,13 @@ def front_win_contract(today: date | None = None) -> str:
             year += 1
         code = WIN_MONTH_CODE[month]
     return f"WIN{code}{year % 100:02d}"
+
+
+def server_looks_demo(name: str) -> bool:
+    key = (name or "").upper()
+    if not key or "PRD" in key or "REAL" in key:
+        return False
+    return "DEMO" in key
 
 
 def preferred_win_symbols(today: date | None = None) -> list[str]:
@@ -110,7 +122,7 @@ def _load_dotenv() -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip("'").strip('"')
-        if key and key not in os.environ:
+        if key and value and not (os.environ.get(key) or "").strip():
             os.environ[key] = value
 
 

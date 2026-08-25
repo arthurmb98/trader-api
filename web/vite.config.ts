@@ -14,12 +14,16 @@ export default defineConfig({
     },
   },
   server: {
+    host: '127.0.0.1',
     port: 5173,
     headers: {
       'Cache-Control': 'no-store',
     },
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
+      '/api': {
+        target: 'http://127.0.0.1:8000',
+        timeout: 60_000,
+      },
     },
   },
 })

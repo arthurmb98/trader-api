@@ -256,13 +256,51 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
         <div className="rounded-2xl border border-border bg-elevated/50 p-5 lg:col-span-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Ordem aberta</p>
           {snap.position ? (
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <SideMark side={snap.position.side} />
-              <p className="tabular-nums">
-                {snap.position.contracts ?? 1} mini · {snap.position.entry.toFixed(0)} · stop {snap.position.stop.toFixed(0)}{' '}
-                · alvo {snap.position.take.toFixed(0)}
-              </p>
-              <p className="text-sm text-muted-foreground">{clock(snap.position.time)}</p>
+            <div className="mt-3 space-y-3">
+              <div className="flex flex-wrap items-center gap-4">
+                <SideMark side={snap.position.side} />
+                <p className="tabular-nums">
+                  {snap.position.contracts ?? 1} mini · {snap.position.entry.toFixed(0)} · stop {snap.position.stop.toFixed(0)}{' '}
+                  · alvo {snap.position.take.toFixed(0)}
+                </p>
+                <p className="text-sm text-muted-foreground">{clock(snap.position.time)}</p>
+                {snap.position.ticket ? (
+                  <p className="text-xs text-muted-foreground">ticket {snap.position.ticket}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">paper · sem envio</p>
+                )}
+              </div>
+              <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div>
+                  <dt className="text-muted-foreground">Preço agora</dt>
+                  <dd className="tabular-nums">{snap.position.mark != null ? snap.position.mark.toFixed(0) : '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">P&L aberto</dt>
+                  <dd
+                    className={cn(
+                      'tabular-nums font-semibold',
+                      (snap.position.pnl ?? 0) > 0 && 'text-gain',
+                      (snap.position.pnl ?? 0) < 0 && 'text-loss',
+                    )}
+                  >
+                    {snap.position.pnl != null ? brl(snap.position.pnl) : '—'}
+                    {snap.position.points != null ? ` · ${snap.position.points.toFixed(0)} pts` : ''}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Até o stop</dt>
+                  <dd className="tabular-nums text-loss">
+                    {snap.position.to_stop != null ? `${snap.position.to_stop.toFixed(0)} pts` : '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Até o gain</dt>
+                  <dd className="tabular-nums text-gain">
+                    {snap.position.to_take != null ? `${snap.position.to_take.toFixed(0)} pts` : '—'}
+                  </dd>
+                </div>
+              </dl>
             </div>
           ) : (
             <p className="mt-3 text-muted-foreground">Nenhuma posição aberta.</p>
@@ -312,6 +350,46 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
       </section>
 
       <section className="relative mx-auto max-w-6xl px-5 py-6 sm:px-8">
+        <h3 className="font-display font-semibold">Sinais</h3>
+        <div className="mt-4 overflow-x-auto rounded-2xl border border-border">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="bg-elevated/80 text-xs uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3">Hora</th>
+                <th className="px-4 py-3">Lado</th>
+                <th className="px-4 py-3">Motivo</th>
+                <th className="px-4 py-3">Entrada</th>
+                <th className="px-4 py-3">Stop</th>
+                <th className="px-4 py-3">Alvo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {snap.signals.length === 0 ? (
+                <tr>
+                  <td className="px-4 py-6 text-muted-foreground" colSpan={6}>
+                    Ainda sem sinal neste pregão. O motor reavalia a cada segundo no M5 do MT5.
+                  </td>
+                </tr>
+              ) : (
+                snap.signals.slice(0, 12).map((s) => (
+                  <tr key={`${s.t}-${s.side}-${s.reason}`} className="border-t border-border/70">
+                    <td className="px-4 py-2 tabular-nums">{clock(s.t)}</td>
+                    <td className="px-4 py-2">
+                      <SideMark side={s.side} />
+                    </td>
+                    <td className="px-4 py-2 text-muted-foreground">{s.reason}</td>
+                    <td className="px-4 py-2 tabular-nums">{s.entry ? s.entry.toFixed(0) : '—'}</td>
+                    <td className="px-4 py-2 tabular-nums text-loss">{s.stop ? s.stop.toFixed(0) : '—'}</td>
+                    <td className="px-4 py-2 tabular-nums text-gain">{s.take ? s.take.toFixed(0) : '—'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="relative mx-auto max-w-6xl px-5 py-6 sm:px-8">
         <h3 className="font-display font-semibold">Ordens</h3>
         <div className="mt-4 overflow-x-auto rounded-2xl border border-border">
           <table className="w-full min-w-[720px] text-left text-sm">
@@ -335,16 +413,19 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
                 </tr>
               ) : (
                 snap.trades.map((t) => (
-                  <tr key={`${t.entry_time}-${t.exit_time}-${t.pnl}`} className="border-t border-border/70">
+                  <tr key={`${t.entry_time}-${t.exit_time}-${t.pnl}-${t.result}`} className="border-t border-border/70">
                     <td className="px-4 py-2 tabular-nums">{clock(t.entry_time)}</td>
-                    <td className="px-4 py-2 tabular-nums">{clock(t.exit_time)}</td>
+                    <td className="px-4 py-2 tabular-nums">{t.result === 'open' ? 'aberta' : clock(t.exit_time)}</td>
                     <td className="px-4 py-2">
                       <SideMark side={t.side} />
                     </td>
                     <td className="px-4 py-2 tabular-nums">{t.contracts ?? 1}</td>
                     <td className="px-4 py-2 tabular-nums">{t.points.toFixed(0)}</td>
                     <td className={cn('px-4 py-2 tabular-nums', t.pnl >= 0 ? 'text-gain' : 'text-loss')}>{brl(t.pnl)}</td>
-                    <td className="px-4 py-2 text-muted-foreground">{t.reason}</td>
+                    <td className="px-4 py-2 text-muted-foreground">
+                      {t.result === 'open' ? 'em aberto · ' : ''}
+                      {t.reason}
+                    </td>
                   </tr>
                 ))
               )}

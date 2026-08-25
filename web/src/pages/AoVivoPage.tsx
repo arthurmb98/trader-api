@@ -2,32 +2,65 @@ import { useEffect, useRef, useState } from 'react'
 import { SessionDashboard, SessionNav } from '@/components/SessionDashboard'
 import { Button } from '@/components/ui/button'
 import { EMPTY_SNAP, clock, isTodayStamp, type LiveSnap } from '@/lib/liveTypes'
-import { brl, readJson } from '@/lib/utils'
+import { apiFetch, brl, cn, readJson } from '@/lib/utils'
 
 const WAIT_LABEL: Record<string, string> = {
-  aguardando_login: 'Aguardando login demo no MT5',
-  conta_real: 'Conta real detectada — o robô não envia ordem',
-  sem_simbolo: 'Sem WIN negociável no Market Watch',
-  autotrading_desligado: 'Ligue o AutoTrading no MT5',
-  mercado_fechado: 'Armado. Paper começa no próximo ouro (09:15), com o candle do stream. Sem ordem no MT5',
-  fora_do_ouro: 'Fora do horário de ouro (09:15–11:00 e 14:30–17:00)',
+  aguardando_login: 'Aguardando o terminal MT5 Genial',
+  conta_real: 'Conta real — simulando paper, sem envio no MT5',
+  sem_simbolo: 'Sem WIN negociável no Market Watch (WINV26 + WIN$)',
+  autotrading_desligado: 'Ligue o AutoTrading no MT5 (só precisa para Enviar)',
+  mercado_fechado: 'ARMADO · fora do pregão. Espera o próximo ouro (09:15) e opera sozinho',
+  fora_do_ouro: 'ARMADO · almoço / fora do ouro. Espera 09:15–11:00 ou 14:30–17:00 e opera sozinho',
   fim_da_sessao: 'Sessão encerrada às 17:00',
-  em_posicao: 'Posição paper aberta',
-  aguardando_candle: 'Pregão aberto. Aguardando M5 do stream',
-  pronto: 'Pronto para simular no próximo sinal',
+  em_posicao: 'Posição aberta',
+  aguardando_candle: 'Pregão aberto. Aguardando M5 do MT5',
+  pronto: 'Pregão aberto. Aguardando o próximo sinal',
 }
 
 type OrderMode = 'paper' | 'mt5'
 
+function pushLog(line: string, extra?: unknown) {
+  console.log('[ao-vivo]', line, extra ?? '')
+  void apiFetch('/api/realtime/ui-log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ line, extra: extra ?? null }),
+  }).catch((err) => console.warn('[ao-vivo] log fail', err))
+}
+
 export function AoVivoPage() {
-  const [snap, setSnap] = useState<LiveSnap>({ ...EMPTY_SNAP, source: 'stream', order_mode: 'paper', interval_sec: 10, lot: 'scaled' })
+  const [snap, setSnap] = useState<LiveSnap>({
+    ...EMPTY_SNAP,
+    source: 'mt5',
+    order_mode: 'paper',
+    interval_sec: 1,
+    lot: 'scaled',
+  })
   const [orderMode, setOrderMode] = useState<OrderMode>('paper')
   const [offline, setOffline] = useState(false)
   const [busy, setBusy] = useState(false)
   const pendingMode = useRef<OrderMode | null>(null)
+  const booted = useRef(false)
+  const busyRef = useRef(false)
+  const wantArmed = useRef<boolean | null>(null)
 
-  const applySnap = (json: LiveSnap) => {
-    setSnap(json)
+  const applySnap = (json: LiveSnap, from: string) => {
+    const next = { ...json }
+    if (wantArmed.current != null && from === 'poll') {
+      next.running = wantArmed.current
+    }
+    if (wantArmed.current != null && from !== 'poll' && Boolean(next.running) === wantArmed.current) {
+      wantArmed.current = null
+    }
+    setSnap(next)
+    const armed = Boolean(next.running || next.armed)
+    if (!armed && from !== 'boot') {
+      pushLog(`snap_not_running from=${from}`, {
+        wait: json.wait_reason,
+        mode: json.order_mode,
+        err: json.error,
+      })
+    }
     if (pendingMode.current) return
     if (json.order_mode === 'paper' || json.order_mode === 'mt5') setOrderMode(json.order_mode)
     else if (json.mode === 'paper' || json.mode === 'mt5') setOrderMode(json.mode)
@@ -35,16 +68,18 @@ export function AoVivoPage() {
   }
 
   const pull = async () => {
+    if (busyRef.current) return
     try {
-      const res = await fetch('/api/realtime', { cache: 'no-store' })
+      const res = await apiFetch('/api/realtime')
       if (!res.ok) {
         const json = await readJson<{ detail?: string }>(res)
         throw new Error(typeof json.detail === 'string' ? json.detail : 'API ao vivo indisponível')
       }
       const json = await readJson<LiveSnap>(res)
-      applySnap(json)
+      applySnap(json, 'poll')
     } catch (err) {
       setOffline(true)
+      pushLog('poll_fail', err instanceof Error ? err.message : err)
       setSnap((prev) => ({
         ...prev,
         error: err instanceof Error ? err.message : 'API offline',
@@ -52,56 +87,105 @@ export function AoVivoPage() {
     }
   }
 
-  useEffect(() => {
-    void pull()
-    const id = window.setInterval(() => {
-      void pull()
-    }, 2000)
-    return () => window.clearInterval(id)
-  }, [])
-
   const post = async (path: string, body?: object) => {
+    busyRef.current = true
     setBusy(true)
+    pushLog(`post ${path}`, body)
     try {
-      const res = await fetch(path, {
+      const res = await apiFetch(path, {
         method: 'POST',
         headers: body ? { 'Content-Type': 'application/json' } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       })
       const json = await readJson<LiveSnap & { detail?: string }>(res)
       if (!res.ok) throw new Error(typeof json.detail === 'string' ? json.detail : 'falhou')
+      pushLog('post_ok', { path, running: json.running, mode: json.order_mode, wait: json.wait_reason })
       if (pendingMode.current && (json.order_mode === pendingMode.current || json.mode === pendingMode.current)) {
         pendingMode.current = null
       }
-      applySnap(json)
+      if (pendingMode.current === 'mt5' && json.order_mode === 'paper') {
+        pendingMode.current = null
+      }
+      applySnap(json, path)
       if (!pendingMode.current) setOffline(false)
     } catch (err) {
       pendingMode.current = null
-      setSnap((prev) => ({ ...prev, error: err instanceof Error ? err.message : 'falhou' }))
+      const message = err instanceof Error ? err.message : 'falhou'
+      pushLog('post_fail', { path, message })
+      setSnap((prev) => ({ ...prev, error: message }))
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
 
+  useEffect(() => {
+    const onErr = (event: ErrorEvent) => pushLog('window_error', event.message)
+    const onRej = (event: PromiseRejectionEvent) => pushLog('unhandled', String(event.reason))
+    window.addEventListener('error', onErr)
+    window.addEventListener('unhandledrejection', onRej)
+    const boot = async () => {
+      try {
+        const res = await apiFetch('/api/realtime')
+        const json = await readJson<LiveSnap>(res)
+        applySnap(json, 'boot')
+        pushLog('boot', {
+          running: json.running,
+          mode: json.order_mode,
+          wait: json.wait_reason,
+          demo: json.mt5?.demo,
+          href: window.location.href,
+        })
+        if (!json.running && !booted.current) {
+          booted.current = true
+          const mode: OrderMode = json.mt5?.demo === false ? 'paper' : 'mt5'
+          await post('/api/realtime/start', { order_mode: mode, source: 'mt5' })
+        }
+      } catch (err) {
+        pushLog('boot_fail', err instanceof Error ? err.message : err)
+        setOffline(true)
+      }
+    }
+    void boot()
+    const id = window.setInterval(() => {
+      void pull()
+    }, 1000)
+    return () => {
+      window.removeEventListener('error', onErr)
+      window.removeEventListener('unhandledrejection', onRej)
+      window.clearInterval(id)
+    }
+  }, [])
+
   const changeOrder = (next: OrderMode) => {
     pendingMode.current = next
     setOrderMode(next)
-    void post('/api/realtime/source', { order_mode: next, source: next === 'paper' ? 'stream' : 'mt5' })
+    void post('/api/realtime/source', { order_mode: next, source: 'mt5' })
+  }
+
+  const armNow = () => {
+    pendingMode.current = null
+    wantArmed.current = true
+    setSnap((prev) => ({ ...prev, running: true, armed: true, error: null }))
+    void post('/api/realtime/start', { order_mode: orderMode, source: 'mt5' })
+  }
+
+  const pauseNow = () => {
+    wantArmed.current = false
+    setSnap((prev) => ({ ...prev, running: false, armed: false }))
+    void post('/api/realtime/stop')
   }
 
   const mt5 = snap.mt5
   const wait = snap.wait_reason || 'aguardando_candle'
   const mt5Down = orderMode === 'mt5' && !mt5?.ready
   const paper = orderMode === 'paper'
+  const armed = Boolean(snap.running || snap.armed)
   const status = offline
     ? 'API offline — rode localmente: python -m trader serve'
-    : !snap.running
-      ? 'Pausado — o motor não está armado'
-      : paper && wait === 'mercado_fechado'
-        ? WAIT_LABEL.mercado_fechado
-        : paper && wait === 'aguardando_candle'
-          ? WAIT_LABEL.aguardando_candle
-          : WAIT_LABEL[wait] || wait
+    : !armed
+      ? 'Pausado — clique Armar'
+      : WAIT_LABEL[wait] || wait
 
   return (
     <div className="relative min-h-dvh">
@@ -115,31 +199,51 @@ export function AoVivoPage() {
         <h1 className="mt-3 font-display text-4xl font-bold">Operação em tempo real</h1>
         <p className="mt-2 max-w-3xl text-muted-foreground">
           {status}. 5 min · lote crescente / R$ 1.000 · best_candles_m5_1000_a
+          {snap.last_tick ? ` · tick ${clock(snap.last_tick)}` : ''}
           {isTodayStamp(snap.last_bar_time) ? ` · candle ${clock(snap.last_bar_time)}` : ''}
+          {snap.feed?.detail ? ` · ${snap.feed.detail}` : ''}
+          {snap.quote ? ` · último ${snap.quote.last.toFixed(0)}` : ''}
+          {snap.position && snap.open_pnl != null ? ` · P&L aberto ${brl(snap.open_pnl)}` : ''}
+          {snap.signal?.reason ? ` · sinal ${snap.signal.side} (${snap.signal.reason})` : ''}
+        </p>
+        <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
+          Os dois modos leem o WIN no MT5 (tick + M5) em tempo real. <strong>Simular</strong> nunca chama order_send:
+          marca compra/venda local e calcula P&L para estudo. <strong>Enviar</strong> usa o mesmo motor e, na demo,
+          manda a ordem no terminal (SL/TP). Nesta conta real o Enviar fica armado, mas continua paper até a demo.
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain">
-            {paper ? 'SIMULAR · paper' : mt5?.demo === false ? 'REAL (bloqueado)' : 'ENVIAR · MT5'}
+          <span
+            className={
+              armed
+                ? 'rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain'
+                : 'rounded-lg bg-loss/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-loss'
+            }
+          >
+            {armed ? 'ARMADO' : 'PAUSADO'}
           </span>
-          {paper ? (
+          <span className="rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain">
+            {paper
+              ? 'SIMULAR · paper local · feed MT5'
+              : mt5?.demo === true
+                ? 'ENVIAR · order_send na demo'
+                : 'ENVIAR · conta real · paper até a demo'}
+          </span>
+          <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
+            {mt5?.server || 'sem servidor'} · {mt5?.login ?? 'sem login'}
+          </span>
+          <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
+            {mt5?.symbol || 'sem símbolo'} {mt5?.filling ? `· ${mt5.filling}` : ''}
+          </span>
+          {mt5?.equity != null ? (
             <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-              stream · {snap.feed?.url ? 'URL' : snap.feed?.ingested ? `${snap.feed.ingested} ingest` : 'aguardando M5 de hoje'}
+              equity {brl(mt5.equity)}
             </span>
-          ) : (
-            <>
-              <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-                {mt5?.server || 'sem servidor'} · {mt5?.login ?? 'sem login'}
-              </span>
-              <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-                {mt5?.symbol || 'sem símbolo'} {mt5?.filling ? `· ${mt5.filling}` : ''}
-              </span>
-              {mt5?.equity != null ? (
-                <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
-                  equity {brl(mt5.equity)}
-                </span>
-              ) : null}
-            </>
-          )}
+          ) : null}
+          {snap.quote ? (
+            <span className="rounded-lg border border-border px-2 py-1 text-xs tabular-nums text-muted-foreground">
+              {snap.quote.bid.toFixed(0)} / {snap.quote.ask.toFixed(0)}
+            </span>
+          ) : null}
           {snap.next_gold ? (
             <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
               próximo ouro {clock(snap.next_gold)}
@@ -161,28 +265,51 @@ export function AoVivoPage() {
             </select>
           </label>
           <div className="flex h-9 items-center gap-2">
-            <Button
-              size="sm"
-              disabled={busy || snap.running}
-              onClick={() => void post('/api/realtime/start', { order_mode: orderMode, source: paper ? 'stream' : 'mt5' })}
-            >
-              Armar{busy ? '…' : ''}
-            </Button>
-            <Button variant="outline" size="sm" disabled={busy || !snap.running} onClick={() => void post('/api/realtime/stop')}>
-              Pausar
-            </Button>
+            <div className="inline-flex h-9 overflow-hidden rounded-lg border border-border bg-elevated/60">
+              <button
+                type="button"
+                aria-pressed={armed}
+                disabled={busy}
+                onClick={() => armNow()}
+                className={cn(
+                  'h-9 px-4 text-sm font-semibold transition-colors',
+                  armed
+                    ? 'bg-gain text-black'
+                    : 'text-muted-foreground hover:bg-card',
+                )}
+              >
+                {armed ? 'Armado' : busy ? 'Armando…' : 'Armar'}
+              </button>
+              <button
+                type="button"
+                aria-pressed={!armed}
+                disabled={busy || !armed}
+                onClick={() => pauseNow()}
+                className={cn(
+                  'h-9 px-4 text-sm font-semibold transition-colors',
+                  !armed
+                    ? 'bg-card text-foreground'
+                    : 'text-muted-foreground hover:bg-card',
+                )}
+              >
+                {armed ? 'Pausar' : 'Pausado'}
+              </button>
+            </div>
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => void post('/api/realtime/reset')}>
               Zerar
             </Button>
           </div>
         </div>
-        {mt5Down ? (
-          <p className="mt-3 text-sm text-loss">MT5 fora do ar. Enviar ordem fica bloqueado até o login demo. Use Simular para o teste.</p>
+        {mt5Down && !paper ? (
+          <p className="mt-3 text-sm text-loss">
+            Enviar só na demo. Nesta conta o motor simula paper e não chama order_send.
+          </p>
         ) : null}
         {snap.error && !snap.error.startsWith('Stream sem candles') ? (
           <p className="mt-3 text-sm text-loss">{snap.error}</p>
         ) : null}
-        {orderMode === 'mt5' && wait === 'aguardando_login' && snap.playbook ? (
+        {snap.skip_reason ? <p className="mt-3 text-sm text-amber-400">{snap.skip_reason}</p> : null}
+        {wait === 'aguardando_login' && snap.playbook ? (
           <pre className="mt-4 max-w-3xl overflow-x-auto whitespace-pre-wrap rounded-2xl border border-border bg-elevated/50 p-4 text-sm text-muted-foreground">
             {snap.playbook}
           </pre>
@@ -192,9 +319,13 @@ export function AoVivoPage() {
       <SessionDashboard
         snap={snap}
         emptyHint={
-          paper
-            ? 'Nenhuma ordem paper ainda. Armado espera o ouro e o M5 do stream (WIN_STREAM_URL ou POST /api/realtime/candles).'
-            : 'Nenhuma ordem enviada. O motor espera o horário de ouro, o login demo e um candle M5 novo.'
+          wait === 'fora_do_ouro'
+            ? `Almoço. Sem ordem até o ouro ${snap.next_gold ? clock(snap.next_gold) : '14:30'}. Os sinais já aparecem acima; a tabela Ordens preenche no primeiro fill.`
+            : wait === 'mercado_fechado'
+              ? `Fora do pregão. Sem ordem até o ouro ${snap.next_gold ? clock(snap.next_gold) : '09:15'}.`
+              : paper
+                ? 'Nenhuma ordem paper ainda. Armado lê o M5 do WIN no MT5 e simula o P&L. Nenhuma ordem é enviada.'
+                : 'Nenhuma ordem enviada. O motor lê o M5 do WIN no MT5 e envia na demo no próximo sinal, se estiver flat.'
         }
       />
     </div>

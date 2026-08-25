@@ -247,6 +247,14 @@ def _signal_from_dict(data: dict[str, Any] | None) -> Signal | None:
     )
 
 
+def _contracts_num(raw: Any, default: float = 0.0) -> float:
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
 def _position_dict(position: dict | None) -> dict[str, Any] | None:
     if not position:
         return None
@@ -259,9 +267,10 @@ def _position_dict(position: dict | None) -> dict[str, Any] | None:
         "time": _iso(position["time"]),
         "hour": int(position["hour"]),
         "extreme": float(position["extreme"]),
-        "contracts": int(position.get("contracts") or 1),
+        "contracts": _contracts_num(position.get("contracts")),
         "reason": str(position.get("reason") or ""),
         "ticket": position.get("ticket"),
+        "entry_bar": position.get("entry_bar"),
     }
 
 
@@ -277,9 +286,10 @@ def _position_from_dict(data: dict[str, Any] | None) -> dict | None:
         "time": ts or datetime.now(),
         "hour": int(data.get("hour") or 0),
         "extreme": float(data.get("extreme") or data["entry"]),
-        "contracts": int(data.get("contracts") or 1),
+        "contracts": _contracts_num(data.get("contracts")),
         "reason": str(data.get("reason") or ""),
         "ticket": data.get("ticket"),
+        "entry_bar": data.get("entry_bar"),
     }
 
 

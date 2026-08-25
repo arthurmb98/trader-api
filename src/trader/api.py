@@ -53,6 +53,11 @@ class RealtimeStart(BaseModel):
     order_mode: str | None = None
 
 
+class UiLogIn(BaseModel):
+    line: str
+    extra: Any | None = None
+
+
 class StreamCandleIn(BaseModel):
     t: str | None = None
     timestamp: str | None = None
@@ -128,7 +133,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Trader API",
-        description="Sinais de day trade no mini índice (WIN) + estudo de eficácia.",
+        description="Estudo WIN + ao vivo no MT5 demo (paper ou envio).",
         version="2.0.0",
         lifespan=lifespan,
     )
@@ -307,6 +312,28 @@ def create_app() -> FastAPI:
         from trader.realtime import get_realtime_engine
 
         return get_realtime_engine().snapshot()
+
+    @app.post("/api/realtime/ui-log")
+    def realtime_ui_log(body: UiLogIn) -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        extra = "" if body.extra is None else f" {body.extra}"
+        get_realtime_engine().note_ui(f"{body.line}{extra}")
+        return {"ok": True}
+
+    @app.get("/api/realtime/ui-log")
+    def realtime_ui_log_get() -> dict[str, Any]:
+        from trader.realtime import get_realtime_engine
+
+        engine = get_realtime_engine()
+        return {
+            "lines": list(engine.ui_logs),
+            "running": engine.running,
+            "armed": bool(engine.running and engine._task is not None and not engine._task.done()),
+            "order_mode": engine.order_mode,
+            "wait_reason": engine.wait_reason,
+            "demo_probe": engine.demo_probe,
+        }
 
     @app.post("/api/realtime/candles")
     async def realtime_candles(request: Request) -> dict[str, Any]:

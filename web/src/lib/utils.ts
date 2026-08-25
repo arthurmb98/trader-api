@@ -26,3 +26,20 @@ export async function readJson<T>(res: Response): Promise<T> {
     throw new Error(hint)
   }
 }
+
+const API_ROOTS = ['', 'http://127.0.0.1:8000']
+
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  let last: unknown
+  for (const root of API_ROOTS) {
+    try {
+      const res = await fetch(`${root}${path}`, { cache: 'no-store', ...init })
+      if (res.ok) return res
+      last = res
+    } catch (err) {
+      last = err
+    }
+  }
+  if (last instanceof Response) return last
+  throw last instanceof Error ? last : new Error('Failed to fetch')
+}

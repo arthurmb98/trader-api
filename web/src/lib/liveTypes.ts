@@ -10,7 +10,7 @@ export type SignalSnap = {
 export type TradeSnap = {
   side: string
   entry_time: string
-  exit_time: string
+  exit_time: string | null
   entry: number
   exit: number
   points: number
@@ -53,6 +53,29 @@ export type Mt5Snap = {
   equity: number | null
 }
 
+export type PositionSnap = {
+  side: string
+  entry: number
+  stop: number
+  take: number
+  time: string | null
+  reason?: string
+  contracts?: number
+  ticket?: number | string | null
+  mark?: number
+  pnl?: number
+  points?: number
+  to_stop?: number
+  to_take?: number
+}
+
+export type QuoteSnap = {
+  bid: number
+  ask: number
+  last: number
+  time?: string | null
+}
+
 export type LiveSnap = {
   running: boolean
   done: boolean
@@ -86,15 +109,7 @@ export type LiveSnap = {
   contracts: number
   max_contracts: number
   signal: SignalSnap | null
-  position: {
-    side: string
-    entry: number
-    stop: number
-    take: number
-    time: string | null
-    reason?: string
-    contracts?: number
-  } | null
+  position: PositionSnap | null
   trades: TradeSnap[]
   equity: { t: string; bank: number }[]
   daily: { t: string; pnl: number }[]
@@ -105,6 +120,9 @@ export type LiveSnap = {
   next_gold?: string | null
   playbook?: string | null
   mode?: 'paper' | 'mt5' | string
+  quote?: QuoteSnap | null
+  open_pnl?: number
+  skip_reason?: string | null
   feed?: {
     ready?: boolean
     symbol?: string | null
@@ -116,6 +134,8 @@ export type LiveSnap = {
     ingested?: number
   }
   mt5?: Mt5Snap
+  armed?: boolean
+  can_send?: boolean
 }
 
 export type LiveMeta = {
@@ -137,7 +157,8 @@ export const EMPTY_SNAP: LiveSnap = {
   done: false,
   error: null,
   config: 'best_candles_m5_1000_a',
-  source: 'paper',
+  source: 'mt5',
+  order_mode: 'mt5',
   interval_sec: 1,
   last_tick: null,
   last_bar_time: null,
@@ -164,6 +185,9 @@ export const EMPTY_SNAP: LiveSnap = {
   daily: [],
   signals: [],
   candles: [],
+  quote: null,
+  open_pnl: 0,
+  skip_reason: null,
   periods: { window_days: 0, levels: ['daily'], series: { daily: [] }, avg: {} },
 }
 

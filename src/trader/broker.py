@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from trader.domain import Candle, Side, Signal
-from trader.mt5_session import SymbolCandidate
+from trader.mt5_session import DEMO_SERVERS, SymbolCandidate, server_looks_demo
 from trader.ports import Broker
+
+
+def _mt5_time(stamp: Any) -> datetime:
+    """MT5 unix times are server clock encoded as UTC, not the Windows local zone."""
+    return datetime.fromtimestamp(int(stamp), tz=timezone.utc).replace(tzinfo=None)
 
 
 class BrokerFactory:
@@ -35,10 +40,6 @@ class Mt5Broker(Broker):
         server: str | None = None,
         path: str | None = None,
     ) -> None:
-        if self._mt5 is not None and self._mt5.account_info() is not None:
-            if select_symbol:
-                self._select_symbol()
-            return
         try:
             import MetaTrader5 as mt5
         except ImportError as exc:
@@ -46,10 +47,14 @@ class Mt5Broker(Broker):
                 "O pacote MetaTrader5 não está disponível neste sistema. "
                 "A API e os estudos funcionam sem ele. Para enviar ordens, use Windows com o terminal MT5 aberto."
             ) from exc
-        kwargs: dict[str, Any] = {"timeout": 10_000}
+        if self._mt5 is not None and self._mt5.account_info() is not None:
+            if select_symbol:
+                self._select_symbol()
+            return
+        kwargs: dict[str, Any] = {"timeout": 20_000}
         if path:
             kwargs["path"] = path
-        elif not login:
+        else:
             for candidate in (
                 r"C:\Program Files\MetaTrader 5\terminal64.exe",
                 r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe",
@@ -57,15 +62,70 @@ class Mt5Broker(Broker):
                 if Path(candidate).exists():
                     kwargs["path"] = candidate
                     break
-        if login and password and server:
-            kwargs["login"] = int(login)
-            kwargs["password"] = password
-            kwargs["server"] = server
         if not mt5.initialize(**kwargs):
             raise RuntimeError(f"MT5 initialize falhou: {mt5.last_error()}")
         self._mt5 = mt5
+        acc = mt5.account_info()
+        if acc is None and login and password:
+            servers: list[str] = []
+            hint = (server or "").strip()
+            if hint and server_looks_demo(hint):
+                servers.append(hint)
+            servers.extend(DEMO_SERVERS)
+            seen: set[str] = set()
+            last_err = None
+            for name in servers:
+                key = (name or "").strip()
+                if not key or key in seen or not server_looks_demo(key):
+                    continue
+                seen.add(key)
+                if mt5.login(int(login), password=password, server=key):
+                    last_err = None
+                    break
+                last_err = mt5.last_error()
+            if last_err is not None and mt5.account_info() is None:
+                raise RuntimeError(
+                    f"MT5 login demo falhou: {last_err}. "
+                    "Conta real no terminal: o ao vivo simula paper e não envia ordem."
+                )
+        if mt5.account_info() is None:
+            raise RuntimeError(
+                f"MT5 sem conta logada: {mt5.last_error()}. "
+                "Abra o MetaTrader da Genial e deixe a janela aberta. Conta real só simula."
+            )
         if select_symbol:
             self._select_symbol()
+
+    def try_demo_login(self, login: str, password: str) -> dict[str, Any]:
+        """Attempt demo servers only. Never logs into PRD/real. May leave the current session as-is on failure."""
+        mt5 = self._require()
+        tried: list[dict[str, Any]] = []
+        for server in DEMO_SERVERS:
+            ok = bool(mt5.login(int(login), password=password, server=server))
+            acc = mt5.account_info()
+            err = mt5.last_error() if not ok else None
+            demo = acc is not None and int(getattr(acc, "trade_mode", -1)) == 0
+            tried.append(
+                {
+                    "server": server,
+                    "ok": ok,
+                    "demo": demo,
+                    "login": int(acc.login) if acc is not None else None,
+                    "trade_mode": int(getattr(acc, "trade_mode", -1)) if acc is not None else None,
+                    "err": str(err) if err else None,
+                }
+            )
+            if demo:
+                return {"switched": True, "server": server, "tried": tried}
+            if acc is None:
+                return {"switched": False, "lost_session": True, "tried": tried}
+        acc = mt5.account_info()
+        return {
+            "switched": False,
+            "lost_session": acc is None,
+            "server": str(acc.server) if acc is not None else None,
+            "tried": tried,
+        }
 
     def _require(self):
         if self._mt5 is None:
@@ -85,7 +145,11 @@ class Mt5Broker(Broker):
     def has_symbol(self, symbol: str) -> bool:
         mt5 = self._require()
         info = mt5.symbol_info(symbol)
-        return info is not None
+        if info is not None:
+            return True
+        if not mt5.symbol_select(symbol, True):
+            return False
+        return mt5.symbol_info(symbol) is not None
 
     def apply_symbol_filling(self) -> None:
         mt5 = self._require()
@@ -93,12 +157,10 @@ class Mt5Broker(Broker):
         if info is None:
             return
         mode = int(getattr(info, "filling_mode", 0) or 0)
-        if mode & mt5.SYMBOL_FILLING_RETURN:
-            self.filling = "RETURN"
-        elif mode & mt5.SYMBOL_FILLING_IOC:
-            self.filling = "IOC"
-        elif mode & mt5.SYMBOL_FILLING_FOK:
-            self.filling = "FOK"
+        has_fok = bool(mode & int(getattr(mt5, "SYMBOL_FILLING_FOK", 1)))
+        has_ioc = bool(mode & int(getattr(mt5, "SYMBOL_FILLING_IOC", 2)))
+        has_return = bool(mode & int(getattr(mt5, "SYMBOL_FILLING_RETURN", 4)))
+        self.filling = filling_from_mode(mode, has_return, has_ioc, has_fok)
 
     def list_win_symbols(self) -> list[SymbolCandidate]:
         mt5 = self._require()
@@ -169,7 +231,7 @@ class Mt5Broker(Broker):
             candles.append(
                 Candle(
                     symbol=symbol,
-                    timestamp=datetime.fromtimestamp(int(row[0])),
+                    timestamp=_mt5_time(row[0]),
                     open=float(row[1]),
                     high=float(row[2]),
                     low=float(row[3]),
@@ -179,12 +241,42 @@ class Mt5Broker(Broker):
             )
         return candles
 
-    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
+    def quote(self) -> dict[str, Any] | None:
         mt5 = self._require()
-        rates = mt5.copy_rates_from_pos(symbol, self._timeframe(timeframe), 1, max(count, 1))
-        if rates is None or len(rates) == 0:
-            raise RuntimeError(f"copy_rates falhou: {mt5.last_error()}")
-        return self._rows_to_candles(symbol, rates)
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return None
+        last = float(getattr(tick, "last", 0) or 0)
+        bid = float(getattr(tick, "bid", 0) or 0)
+        ask = float(getattr(tick, "ask", 0) or 0)
+        mark = last or bid or ask
+        if mark <= 0:
+            return None
+        stamp = getattr(tick, "time", None)
+        return {
+            "bid": bid or mark,
+            "ask": ask or mark,
+            "last": mark,
+            "time": _mt5_time(stamp).isoformat() if stamp else None,
+        }
+
+    def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
+        import time
+
+        mt5 = self._require()
+        mt5.symbol_select(symbol, True)
+        tf = self._timeframe(timeframe)
+        need = max(count, 1)
+        rates = None
+        last_err: Any = None
+        for start in (1, 0):
+            for _ in range(4):
+                rates = mt5.copy_rates_from_pos(symbol, tf, start, need)
+                if rates is not None and len(rates) > 0:
+                    return self._rows_to_candles(symbol, rates)
+                last_err = mt5.last_error()
+                time.sleep(0.4)
+        raise RuntimeError(f"copy_rates falhou: {last_err}")
 
     def copy_rates_range(
         self,
@@ -297,7 +389,7 @@ class Mt5Broker(Broker):
                     "stop": float(pos.sl),
                     "take": float(pos.tp),
                     "volume": float(pos.volume),
-                    "time": datetime.fromtimestamp(int(pos.time)),
+                    "time": _mt5_time(pos.time),
                     "profit": float(getattr(pos, "profit", 0) or 0),
                 }
             )
@@ -319,7 +411,7 @@ class Mt5Broker(Broker):
         deal = closes[-1]
         return {
             "price": float(deal.price),
-            "time": datetime.fromtimestamp(int(deal.time)),
+            "time": _mt5_time(deal.time),
             "profit": float(deal.profit),
         }
 
