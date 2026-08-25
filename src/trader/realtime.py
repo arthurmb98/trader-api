@@ -38,6 +38,21 @@ from trader.risk import RiskCalculator
 SESSION_PATH = RESULTS_DIR / "realtime_session.json"
 CONFIG_NAME = "best_candles_m5_1000_a"
 DEFAULT_BANK = 1000.0
+ORDER_MODES = {"paper", "mt5", "prd"}
+ORDER_MODE_ALIASES = {
+    "prod": "prd",
+    "production": "prd",
+    "producao": "prd",
+    "produção": "prd",
+}
+
+
+def normalize_order_mode(mode: str | None) -> str:
+    key = str(mode or "paper").strip().lower()
+    key = ORDER_MODE_ALIASES.get(key, key)
+    if key not in ORDER_MODES:
+        raise ValueError("order_mode deve ser paper, mt5 ou prd")
+    return key
 POLL_SEC = 0.5
 
 
@@ -262,7 +277,10 @@ class RealtimeEngine:
             "feed": dict(self.feed_info),
             "mt5": dict(self.mt5_info),
             "armed": bool(self.running and self._task is not None and not self._task.done()),
-            "can_send": bool(self.order_mode == "mt5" and self.mt5_info.get("demo") is True),
+            "can_send": bool(
+                (self.order_mode == "mt5" and self.mt5_info.get("demo") is True)
+                or self.order_mode == "prd"
+            ),
             "demo_probe": dict(self.demo_probe) if self.demo_probe else None,
         }
 
@@ -310,9 +328,7 @@ class RealtimeEngine:
         return {"ok": True, "n": len(candles), "symbol": self._stream.symbol, "feed": self.feed_info}
 
     def set_order_mode(self, mode: str) -> None:
-        key = str(mode or "paper").strip().lower()
-        if key not in {"paper", "mt5"}:
-            raise ValueError("order_mode deve ser paper ou mt5")
+        key = normalize_order_mode(mode)
         self.order_mode = key
         self._enter_now = True
         if key == "paper":
@@ -331,6 +347,11 @@ class RealtimeEngine:
         if not self.mt5_info.get("login"):
             self.wait_reason = "aguardando_login"
 
+    def _will_send(self) -> bool:
+        if self.order_mode == "prd":
+            return True
+        return self.order_mode == "mt5" and self.mt5_info.get("demo") is True
+
     def set_source(self, source: str) -> None:
         key = str(source or "mt5").strip().lower()
         if key not in {"mt5", "stream"}:
@@ -344,7 +365,7 @@ class RealtimeEngine:
             self.wait_reason = "aguardando_candle"
             return
         self.source = "mt5"
-        if self.order_mode not in {"paper", "mt5"}:
+        if self.order_mode not in ORDER_MODES:
             self.order_mode = "mt5"
         self.wait_reason = "aguardando_login"
 
@@ -381,13 +402,13 @@ class RealtimeEngine:
             raw = json.loads(SESSION_PATH.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
-        if raw.get("order_mode") in {"paper", "mt5"}:
+        if raw.get("order_mode") in ORDER_MODES:
             self.order_mode = str(raw["order_mode"])
         elif raw.get("source") == "stream":
             self.order_mode = "paper"
         if raw.get("source") in {"mt5", "stream"}:
             self.source = str(raw["source"])
-        if self.order_mode == "mt5":
+        if self.order_mode in {"mt5", "prd"}:
             self.source = "mt5"
         elif self.source not in {"mt5", "stream"}:
             self.source = "mt5"
@@ -561,7 +582,7 @@ class RealtimeEngine:
         if self._cfg and self.trades_today >= self._cfg.risk.max_trades_per_day:
             return False
         if live_mt5:
-            if self.mt5_info.get("demo") is False:
+            if self.order_mode != "prd" and self.mt5_info.get("demo") is False:
                 return False
             if not self.mt5_info.get("trade_allowed"):
                 return False
@@ -598,7 +619,7 @@ class RealtimeEngine:
         if mark is None:
             return {}
         points = (mark - entry) if self._is_buy(side) else (entry - mark)
-        if self._mt5_profit is not None and self.order_mode == "mt5":
+        if self._mt5_profit is not None and self.order_mode in {"mt5", "prd"}:
             pnl = float(self._mt5_profit)
         else:
             pv = float(self._cfg.account.point_value) if self._cfg else 0.2
@@ -665,8 +686,10 @@ class RealtimeEngine:
         assert self._cfg is not None and self._bt is not None
         if self.order_mode == "paper":
             raise RuntimeError("Modo simular não envia ordem.")
-        if self.mt5_info.get("demo") is False:
-            raise RuntimeError("Recusado: conta real.")
+        if self.order_mode == "mt5" and self.mt5_info.get("demo") is False:
+            raise RuntimeError("Recusado: conta real. Use Produção para enviar no PRD.")
+        if self.order_mode not in {"mt5", "prd"}:
+            raise RuntimeError("Modo atual não envia ordem.")
         n = self._n_contracts()
         stop, take = self._bt.risk.levels(sig.side, entry, None)
         order_sig = Signal(side=sig.side, entry=entry, stop=stop, take=take, reason=sig.reason, predicted=sig.predicted)
@@ -787,7 +810,7 @@ class RealtimeEngine:
             self.day_key = key
             self.day_pnl = 0.0
             self.trades_today = 0
-        send = self.order_mode == "mt5" and self.mt5_info.get("demo") is True
+        send = self._will_send()
         if not self.mt5_info.get("symbol") and not broker.symbol:
             self.wait_reason = "sem_simbolo"
             return
@@ -811,7 +834,7 @@ class RealtimeEngine:
                 self.wait_reason = session_wait_reason(
                     connected=True,
                     account=bool(self.mt5_info.get("login")),
-                    demo=True if not send else self.mt5_info.get("demo"),
+                    demo=True if (not send or self.order_mode == "prd") else self.mt5_info.get("demo"),
                     symbol=self.mt5_info.get("symbol"),
                     trade_allowed=True if not send else bool(self.mt5_info.get("trade_allowed")),
                     now=now,
@@ -850,7 +873,7 @@ class RealtimeEngine:
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
-            demo=True if not send else self.mt5_info.get("demo"),
+            demo=True if (not send or self.order_mode == "prd") else self.mt5_info.get("demo"),
             symbol=self.mt5_info.get("symbol") or broker.symbol,
             trade_allowed=True if not send else bool(self.mt5_info.get("trade_allowed")),
             now=now,

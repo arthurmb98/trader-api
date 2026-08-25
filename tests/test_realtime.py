@@ -287,6 +287,7 @@ class _FakeWinBroker:
     def __init__(self) -> None:
         self.sent = 0
         self.demo = True
+        self.allow_send = False
         self._candles: list = []
 
     def connect(self, **kwargs):  # noqa: ANN003
@@ -335,7 +336,9 @@ class _FakeWinBroker:
 
     def send(self, *args, **kwargs):  # noqa: ANN002, ANN003
         self.sent += 1
-        raise AssertionError("order_send nao pode rodar no paper")
+        if not self.allow_send:
+            raise AssertionError("order_send nao pode rodar no paper")
+        return {"retcode": 10009, "order": 77, "deal": 77, "comment": "ok"}
 
 
 def _win_candles(start: datetime, n: int = 80):
@@ -523,5 +526,40 @@ def test_paper_does_not_instant_close_on_wide_entry_bar() -> None:
     engine.tick(now=datetime(2026, 8, 25, 14, 36, 30))
     assert engine.position is not None
     assert engine.trades == []
+    assert fake.sent == 0
+
+
+def test_prd_sends_on_real_account_in_gold() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert engine.order_mode == "prd"
+    assert engine.snapshot()["can_send"] is True
+    assert fake.sent == 1
+    assert engine.position is not None
+    assert engine.position.get("ticket") == 77
+
+
+def test_enviar_on_real_still_refuses_send() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("mt5")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    engine._prepare_policy()
+    engine.mt5_info["demo"] = False
+    try:
+        engine._send_signal(fake, Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "x"), 140_000.0)  # type: ignore[arg-type]
+        raise AssertionError("Enviar na conta real nao pode order_send")
+    except RuntimeError as exc:
+        assert "real" in str(exc).lower() or "Produção" in str(exc) or "prd" in str(exc).lower()
     assert fake.sent == 0
 

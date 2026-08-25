@@ -84,7 +84,7 @@ export type LiveSnap = {
   case?: CaseKey | string
   timeframe?: TfKey | string
   source: string
-  order_mode?: 'paper' | 'mt5' | string
+  order_mode?: 'paper' | 'mt5' | 'prd' | string
   interval_sec: number
   window_start?: string | null
   window_end?: string | null
@@ -119,7 +119,7 @@ export type LiveSnap = {
   wait_reason?: string
   next_gold?: string | null
   playbook?: string | null
-  mode?: 'paper' | 'mt5' | string
+  mode?: 'paper' | 'mt5' | 'prd' | string
   quote?: QuoteSnap | null
   open_pnl?: number
   skip_reason?: string | null

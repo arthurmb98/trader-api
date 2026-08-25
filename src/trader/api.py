@@ -133,7 +133,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Trader API",
-        description="Estudo WIN + ao vivo no MT5 demo (paper ou envio).",
+        description="Estudo WIN + ao vivo no MT5 (paper, demo ou produção).",
         version="2.0.0",
         lifespan=lifespan,
     )

@@ -8,7 +8,7 @@ const WAIT_LABEL: Record<string, string> = {
   aguardando_login: 'Aguardando o terminal MT5 Genial',
   conta_real: 'Conta real — simulando paper, sem envio no MT5',
   sem_simbolo: 'Sem WIN negociável no Market Watch (WINV26 + WIN$)',
-  autotrading_desligado: 'Ligue o AutoTrading no MT5 (só precisa para Enviar)',
+  autotrading_desligado: 'Ligue o AutoTrading no MT5 (Enviar demo ou Produção)',
   mercado_fechado: 'ARMADO · fora do pregão. Espera o próximo ouro (09:15) e opera sozinho',
   fora_do_ouro: 'ARMADO · almoço / fora do ouro. Espera 09:15–11:00 ou 14:30–17:00 e opera sozinho',
   fim_da_sessao: 'Sessão encerrada às 17:00',
@@ -17,7 +17,11 @@ const WAIT_LABEL: Record<string, string> = {
   pronto: 'Pregão aberto. Aguardando o próximo sinal',
 }
 
-type OrderMode = 'paper' | 'mt5'
+type OrderMode = 'paper' | 'mt5' | 'prd'
+
+function isOrderMode(value: unknown): value is OrderMode {
+  return value === 'paper' || value === 'mt5' || value === 'prd'
+}
 
 function pushLog(line: string, extra?: unknown) {
   console.log('[ao-vivo]', line, extra ?? '')
@@ -62,8 +66,8 @@ export function AoVivoPage() {
       })
     }
     if (pendingMode.current) return
-    if (json.order_mode === 'paper' || json.order_mode === 'mt5') setOrderMode(json.order_mode)
-    else if (json.mode === 'paper' || json.mode === 'mt5') setOrderMode(json.mode)
+    if (isOrderMode(json.order_mode)) setOrderMode(json.order_mode)
+    else if (isOrderMode(json.mode)) setOrderMode(json.mode)
     setOffline(false)
   }
 
@@ -138,7 +142,7 @@ export function AoVivoPage() {
         })
         if (!json.running && !booted.current) {
           booted.current = true
-          const mode: OrderMode = json.mt5?.demo === false ? 'paper' : 'mt5'
+          const mode: OrderMode = json.order_mode === 'prd' ? 'paper' : json.mt5?.demo === false ? 'paper' : 'mt5'
           await post('/api/realtime/start', { order_mode: mode, source: 'mt5' })
         }
       } catch (err) {
@@ -164,6 +168,12 @@ export function AoVivoPage() {
   }
 
   const armNow = () => {
+    if (orderMode === 'prd') {
+      const ok = window.confirm(
+        'Modo Produção: no próximo sinal válido (ouro, não FLAT) a API chama order_send nesta conta real Genial, com stop e alvo. Continuar?',
+      )
+      if (!ok) return
+    }
     pendingMode.current = null
     wantArmed.current = true
     setSnap((prev) => ({ ...prev, running: true, armed: true, error: null }))
@@ -178,8 +188,8 @@ export function AoVivoPage() {
 
   const mt5 = snap.mt5
   const wait = snap.wait_reason || 'aguardando_candle'
-  const mt5Down = orderMode === 'mt5' && !mt5?.ready
   const paper = orderMode === 'paper'
+  const prod = orderMode === 'prd'
   const armed = Boolean(snap.running || snap.armed)
   const status = offline
     ? 'API offline — rode localmente: python -m trader serve'
@@ -194,7 +204,7 @@ export function AoVivoPage() {
 
       <section className="relative mx-auto max-w-6xl px-5 pb-4 sm:px-8">
         <p className="text-sm uppercase tracking-[0.2em] text-primary">
-          {paper ? 'Ao vivo · simular' : 'Ao vivo · enviar MT5'}
+          {paper ? 'Ao vivo · simular' : prod ? 'Ao vivo · produção PRD' : 'Ao vivo · enviar MT5'}
         </p>
         <h1 className="mt-3 font-display text-4xl font-bold">Operação em tempo real</h1>
         <p className="mt-2 max-w-3xl text-muted-foreground">
@@ -207,9 +217,10 @@ export function AoVivoPage() {
           {snap.signal?.reason ? ` · sinal ${snap.signal.side} (${snap.signal.reason})` : ''}
         </p>
         <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
-          Os dois modos leem o WIN no MT5 (tick + M5) em tempo real. <strong>Simular</strong> nunca chama order_send:
-          marca compra/venda local e calcula P&L para estudo. <strong>Enviar</strong> usa o mesmo motor e, na demo,
-          manda a ordem no terminal (SL/TP). Nesta conta real o Enviar fica armado, mas continua paper até a demo.
+          Os três modos leem o WIN no MT5 (tick + M5) em tempo real. <strong>Simular</strong> nunca chama order_send:
+          marca compra/venda local e calcula P&L para estudo. <strong>Enviar</strong> manda ordem só na demo; no PRD
+          continua paper. <strong>Produção</strong> envia de fato na conta real no sinal válido (ouro, stop/alvo, lote
+          crescente). AutoTrading precisa estar ligado.
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <span
@@ -221,12 +232,20 @@ export function AoVivoPage() {
           >
             {armed ? 'ARMADO' : 'PAUSADO'}
           </span>
-          <span className="rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain">
+          <span
+            className={
+              prod
+                ? 'rounded-lg bg-loss/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-loss'
+                : 'rounded-lg bg-gain/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gain'
+            }
+          >
             {paper
               ? 'SIMULAR · paper local · feed MT5'
-              : mt5?.demo === true
-                ? 'ENVIAR · order_send na demo'
-                : 'ENVIAR · conta real · paper até a demo'}
+              : prod
+                ? 'PRODUÇÃO · order_send na conta real'
+                : mt5?.demo === true
+                  ? 'ENVIAR · order_send na demo'
+                  : 'ENVIAR · conta real · paper até a demo'}
           </span>
           <span className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground">
             {mt5?.server || 'sem servidor'} · {mt5?.login ?? 'sem login'}
@@ -262,6 +281,7 @@ export function AoVivoPage() {
             >
               <option value="paper">Simular</option>
               <option value="mt5">Enviar (MT5 demo)</option>
+              <option value="prd">Produção (conta real)</option>
             </select>
           </label>
           <div className="flex h-9 items-center gap-2">
@@ -300,9 +320,15 @@ export function AoVivoPage() {
             </Button>
           </div>
         </div>
-        {mt5Down && !paper ? (
+        {orderMode === 'mt5' && mt5?.demo === false ? (
           <p className="mt-3 text-sm text-loss">
-            Enviar só na demo. Nesta conta o motor simula paper e não chama order_send.
+            Enviar só na demo. Nesta conta o motor simula paper e não chama order_send. Para enviar no PRD, use Produção.
+          </p>
+        ) : null}
+        {prod ? (
+          <p className="mt-3 text-sm text-loss">
+            Produção envia ordem real no Genial PRD no próximo sinal válido (09:15–11:00 e 14:30–17:00, não FLAT). Ligue
+            o AutoTrading.
           </p>
         ) : null}
         {snap.error && !snap.error.startsWith('Stream sem candles') ? (
@@ -325,7 +351,9 @@ export function AoVivoPage() {
               ? `Fora do pregão. Sem ordem até o ouro ${snap.next_gold ? clock(snap.next_gold) : '09:15'}.`
               : paper
                 ? 'Nenhuma ordem paper ainda. Armado lê o M5 do WIN no MT5 e simula o P&L. Nenhuma ordem é enviada.'
-                : 'Nenhuma ordem enviada. O motor lê o M5 do WIN no MT5 e envia na demo no próximo sinal, se estiver flat.'
+                : prod
+                  ? 'Nenhuma ordem real ainda. No ouro, um sinal BUY/SELL válido chama order_send nesta conta PRD.'
+                  : 'Nenhuma ordem enviada. O motor lê o M5 do WIN no MT5 e envia na demo no próximo sinal, se estiver flat.'
         }
       />
     </div>
