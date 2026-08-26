@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 import numpy as np
 import pandas as pd
@@ -102,6 +102,7 @@ class BacktestEngine:
         pa_sides: np.ndarray | None = None,
         strange_mask: np.ndarray | None = None,
         compound_step: float | None = None,
+        marks: list[tuple[datetime, float]] | None = None,
     ) -> StudyMetrics:
         acc = self.config.account
         flt = self.config.filters
@@ -145,6 +146,8 @@ class BacktestEngine:
         max_trades = self.config.risk.max_trades_per_day
         use_daily_loss = self.config.risk.daily_loss_points > 0
         last_logged_contracts = 1
+        mark_i = 0
+        use_marks = bool(marks)
 
         def size_now() -> int:
             if compound:
@@ -194,11 +197,31 @@ class BacktestEngine:
                                 nxt = Side.BUY if pa > 0 else Side.SELL
                         if not invalidate:
                             invalidate = nxt is not position["side"]
-                self._protect_position(position, h, l, invalidate=invalidate)
-                exit_price, reason = self._manage(position, o, h, l, c)
-                if exit_price is None and flatten[i]:
+                bar_end = timestamps[i + 1] if i + 1 < n else ts + timedelta(minutes=5)
+                exit_price: float | None = None
+                reason = ""
+                if use_marks and marks is not None:
+                    path, mark_i = self._take_marks(marks, mark_i, ts, bar_end)
+                    position, closed = self._walk_marks(position, path, invalidate_first=i > open_i)
+                    if closed is not None:
+                        trades.append(closed)
+                        bank += closed.pnl
+                        day_pnl += closed.pnl
+                        peak = max(peak, bank)
+                        max_dd = max(max_dd, peak - bank)
+                        equity.append({"t": closed.exit_time.isoformat(), "bank": round(bank, 2)})
+                        position = None
+                    elif flatten[i]:
+                        last_px = float(path[-1][1]) if path else c
+                        exit_price, reason = last_px, "fim_da_sessao"
+                elif i > open_i:
+                    self._protect_position(position, h, l, invalidate=invalidate)
+                    exit_price, reason = self._manage(position, o, h, l, c)
+                    if exit_price is None and flatten[i]:
+                        exit_price, reason = c, "fim_da_sessao"
+                elif flatten[i]:
                     exit_price, reason = c, "fim_da_sessao"
-                if exit_price is not None:
+                if position is not None and exit_price is not None:
                     trade = self._close(position, ts, exit_price, reason)
                     trades.append(trade)
                     bank += trade.pnl
@@ -300,17 +323,18 @@ class BacktestEngine:
                 "orig_take": float(take),
             }
             trades_today += 1
-            self._protect_position(position, h, l, invalidate=False)
-            exit_price, reason = self._manage(position, o, h, l, c)
-            if exit_price is not None:
-                trade = self._close(position, ts, exit_price, reason)
-                trades.append(trade)
-                bank += trade.pnl
-                day_pnl += trade.pnl
-                peak = max(peak, bank)
-                max_dd = max(max_dd, peak - bank)
-                equity.append({"t": ts.isoformat(), "bank": round(bank, 2)})
-                position = None
+            if use_marks and marks is not None:
+                bar_end = timestamps[i + 1] if i + 1 < n else ts + timedelta(minutes=5)
+                path, mark_i = self._take_marks(marks, mark_i, ts, bar_end)
+                position, closed = self._walk_marks(position, path, invalidate_first=False)
+                if closed is not None:
+                    trades.append(closed)
+                    bank += closed.pnl
+                    day_pnl += closed.pnl
+                    peak = max(peak, bank)
+                    max_dd = max(max_dd, peak - bank)
+                    equity.append({"t": closed.exit_time.isoformat(), "bank": round(bank, 2)})
+                    position = None
 
         if position is not None:
             trade = self._close(position, timestamps[-1], float(closes[-1]), "fim_dos_dados")
@@ -322,6 +346,53 @@ class BacktestEngine:
         metrics.max_contracts = max_contracts
         metrics.contracts_path = contracts_path
         return metrics
+
+    def _take_marks(
+        self,
+        marks: list[tuple[datetime, float]],
+        mark_i: int,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[tuple[datetime, float]], int]:
+        out: list[tuple[datetime, float]] = []
+        n_marks = len(marks)
+
+        def _naive(value: datetime) -> datetime:
+            if hasattr(value, "to_pydatetime"):
+                value = value.to_pydatetime()
+            if getattr(value, "tzinfo", None) is not None:
+                value = value.replace(tzinfo=None)
+            return value
+
+        start = _naive(start)
+        end = _naive(end)
+        while mark_i < n_marks:
+            t, px = marks[mark_i]
+            t = _naive(t)
+            if t < start:
+                mark_i += 1
+                continue
+            if t >= end:
+                break
+            out.append((t, px))
+            mark_i += 1
+        return out, mark_i
+
+    def _walk_marks(
+        self,
+        position: dict,
+        path: list[tuple[datetime, float]],
+        *,
+        invalidate_first: bool,
+    ) -> tuple[dict | None, Trade | None]:
+        first = True
+        for t, px in path:
+            self._protect_position(position, px, px, invalidate=bool(invalidate_first and first))
+            first = False
+            exit_price, reason = self._manage(position, px, px, px, px)
+            if exit_price is not None:
+                return None, self._close(position, t, float(exit_price), reason)
+        return position, None
 
     def _protect_position(self, position: dict, h: float, l: float, *, invalidate: bool) -> None:
         side: Side = position["side"]

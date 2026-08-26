@@ -128,6 +128,8 @@ export type LiveSnap = {
   quote?: QuoteSnap | null
   open_pnl?: number
   skip_reason?: string | null
+  tick_msc?: number | null
+  tick_age_ms?: number | null
   feed?: {
     ready?: boolean
     symbol?: string | null
@@ -150,6 +152,7 @@ export type LiveMeta = {
   timeframe: TfKey
   min_date: string
   max_date: string
+  csv_max_date?: string
   default_start: string
   default_end: string
   max_span_months: number
@@ -194,6 +197,8 @@ export const EMPTY_SNAP: LiveSnap = {
   quote: null,
   open_pnl: 0,
   skip_reason: null,
+  tick_msc: null,
+  tick_age_ms: null,
   periods: { window_days: 0, levels: ['daily'], series: { daily: [] }, avg: {} },
 }
 

@@ -146,6 +146,19 @@ def write_candles(frame: pd.DataFrame, path: str | Path) -> Path:
     return out
 
 
+def merge_candle_frames(*frames: pd.DataFrame) -> pd.DataFrame:
+    parts = [frame for frame in frames if frame is not None and not frame.empty]
+    if not parts:
+        return pd.DataFrame(columns=["Ativo", "Data", "Hora", *OHLC, "Volume", "timestamp", "source_file"])
+    out = pd.concat(parts, ignore_index=True)
+    out["timestamp"] = pd.to_datetime(out["timestamp"])
+    out = out.dropna(subset=["timestamp", *OHLC])
+    if "Ativo" not in out.columns:
+        out["Ativo"] = "WIN$"
+    out = out.sort_values("timestamp").drop_duplicates(subset=["Ativo", "timestamp"], keep="last")
+    return out.reset_index(drop=True)
+
+
 def split_by_wall(frame: pd.DataFrame, wall: pd.Timestamp = SPLIT_TS) -> tuple[pd.DataFrame, pd.DataFrame]:
     ts = pd.to_datetime(frame["timestamp"])
     train = frame.loc[ts < wall].copy().reset_index(drop=True)

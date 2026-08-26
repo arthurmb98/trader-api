@@ -17,7 +17,25 @@ const WAIT_LABEL: Record<string, string> = {
   pronto: 'Pregão aberto. Aguardando o próximo sinal',
 }
 
-type OrderMode = 'paper' | 'mt5' | 'prd'
+function snapKey(json: LiveSnap) {
+  const q = json.quote
+  const pos = json.position
+  const pend = json.pending
+  return [
+    json.last_tick,
+    json.running,
+    json.wait_reason,
+    json.skip_reason,
+    json.error,
+    json.n_trades,
+    json.order_mode,
+    q?.last,
+    pos?.entry,
+    pos?.stop,
+    pos?.take,
+    pend?.entry,
+  ].join('|')
+}
 
 function isOrderMode(value: unknown): value is OrderMode {
   return value === 'paper' || value === 'mt5' || value === 'prd'
@@ -62,8 +80,16 @@ export function AoVivoPage() {
   const pullingRef = useRef(false)
   const wantArmed = useRef<boolean | null>(null)
   const toldEmptyBank = useRef(false)
+  const snapKeyRef = useRef('')
 
   const applySnap = (json: LiveSnap, from: string) => {
+    if (from === 'poll') {
+      const key = snapKey(json)
+      if (key === snapKeyRef.current) return
+      snapKeyRef.current = key
+    } else {
+      snapKeyRef.current = snapKey(json)
+    }
     const next = { ...json }
     if (wantArmed.current != null && from === 'poll') {
       next.running = wantArmed.current
@@ -170,7 +196,7 @@ export function AoVivoPage() {
     void boot()
     const id = window.setInterval(() => {
       void pull()
-    }, 2000)
+    }, 20)
     return () => {
       window.removeEventListener('error', onErr)
       window.removeEventListener('unhandledrejection', onRej)

@@ -9,7 +9,7 @@ def _is_buy(side: Side | str) -> bool:
 
 
 def delay_band_points(tick: float, delay_points: float) -> float:
-    """Worse-side band in points, snapped to tick (WIN mini 15 pts = R$3)."""
+    """Worse-side band in points, snapped to tick (WIN mini 10 pts = R$2)."""
     pts = float(delay_points or 0.0)
     if pts <= 0 or tick <= 0:
         return 0.0
@@ -52,6 +52,24 @@ def limit_fill_price(
     if high < limit:
         return None
     return max(limit, open_)
+
+
+def clamp_limit_to_book(
+    side: Side | str,
+    limit: float,
+    bid: float | None,
+    ask: float | None,
+    tick: float,
+) -> float:
+    """If the book is already through the LIMIT, rest at the better bid/ask so MT5 accepts the pending."""
+    planned = float(limit)
+    if _is_buy(side):
+        if ask is not None and float(ask) <= planned:
+            return round_to_tick(float(ask), tick)
+        return planned
+    if bid is not None and float(bid) >= planned:
+        return round_to_tick(float(bid), tick)
+    return planned
 
 
 def limit_hits_mark(side: Side | str, limit: float, mark: float | None) -> bool:

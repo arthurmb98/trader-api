@@ -33,7 +33,7 @@ from trader.mt5_session import (
 )
 from trader.paths import RESULTS_DIR
 from trader.replay import ensure_model, load_named_config
-from trader.execution import limit_fill_from_mark, limit_hits_mark, planned_limit_entry
+from trader.execution import clamp_limit_to_book, limit_fill_from_mark, limit_hits_mark, planned_limit_entry
 from trader.risk import RiskCalculator, protect_levels
 
 SESSION_PATH = RESULTS_DIR / "realtime_session.json"
@@ -55,7 +55,8 @@ def normalize_order_mode(mode: str | None) -> str:
     if key not in ORDER_MODES:
         raise ValueError("order_mode deve ser paper, mt5 ou prd")
     return key
-POLL_SEC = 0.5
+POLL_SEC = 0.02
+BAR_FETCH_SEC = 1.0
 
 
 def load_live_config() -> AppConfig:
@@ -110,6 +111,8 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "quote": None,
         "open_pnl": 0.0,
         "skip_reason": None,
+        "tick_msc": None,
+        "tick_age_ms": None,
         "wait_reason": "mercado_fechado",
         "next_gold": next_gold_window(),
         "playbook": None,
@@ -180,6 +183,10 @@ class RealtimeEngine:
         self._broker: Mt5Broker | None = None
         self._ticks_since_save = 0
         self._ticks_mt5 = 0
+        self._last_bar_fetch: datetime | None = None
+        self._snap_cache: dict[str, Any] | None = None
+        self._slow_ticks = 0
+        self.tick_msc: int | None = None
         self.quote: dict[str, Any] | None = None
         self._enter_now = False
         self._mt5_profit: float | None = None
@@ -188,6 +195,25 @@ class RealtimeEngine:
         self.ui_logs: list[str] = []
 
     def snapshot(self) -> dict[str, Any]:
+        if self._snap_cache is not None:
+            return self._snap_cache
+        return self._build_snapshot()
+
+    def _publish_snapshot(self) -> dict[str, Any]:
+        self._snap_cache = self._build_snapshot()
+        return self._snap_cache
+
+    def _tick_age_ms(self, now: datetime | None = None) -> float | None:
+        if not self.quote:
+            return None
+        raw = self.quote.get("time_msc")
+        if raw is None:
+            return None
+        now = now or datetime.now()
+        age = now.timestamp() * 1000.0 - float(raw)
+        return max(0.0, round(age, 1))
+
+    def _build_snapshot(self) -> dict[str, Any]:
         wins = [t for t in self.trades if t.get("result") == "win"]
         n = len(self.trades)
         days = {str(t.get("exit_time", ""))[:10] for t in self.trades if t.get("exit_time")}
@@ -267,7 +293,7 @@ class RealtimeEngine:
             "lot": self.lot,
             "contracts": self._n_contracts(),
             "max_contracts": self.max_contracts,
-            "signal": _signal_dict(self.last_signal),
+            "signal": self._signal_for_ui(),
             "position": pos,
             "pending": _position_dict(self.pending),
             "trades": ([open_row] if open_row else []) + list(reversed(self.trades[-80:])),
@@ -279,6 +305,8 @@ class RealtimeEngine:
             "quote": dict(self.quote) if self.quote else None,
             "open_pnl": round(open_pnl, 2),
             "skip_reason": self._skip_reason(),
+            "tick_msc": self.tick_msc,
+            "tick_age_ms": self._tick_age_ms(),
             "wait_reason": self.wait_reason,
             "next_gold": next_gold_window(),
             "playbook": DEMO_PLAYBOOK if self.wait_reason == "aguardando_login" else None,
@@ -728,6 +756,17 @@ class RealtimeEngine:
             live = self._live_bank()
             if live is None or live < MIN_LIVE_BANK:
                 return f"Sinal {sig.side.value} sem ordem: banca MT5 abaixo de R$ {MIN_LIVE_BANK:.0f}."
+        max_n = int(self._cfg.risk.max_trades_per_day) if self._cfg else 0
+        if max_n > 0 and self.trades_today >= max_n:
+            return (
+                f"Sinal {sig.side.value} sem ordem: teto de {max_n} trades no dia "
+                f"(já foram {self.trades_today})."
+            )
+        if self.pending is None and self.position is None:
+            return (
+                f"Sinal {sig.side.value} visível, mas a LIMIT ainda não está no livro. "
+                "O motor só arma no fechamento do M5 e reenvia se o send falhar."
+            )
         return None
 
     def _open_trade_row(self, pos: dict[str, Any] | None, open_meta: dict[str, Any]) -> dict[str, Any] | None:
@@ -767,6 +806,26 @@ class RealtimeEngine:
         pred = float(sig.predicted.open) if sig.predicted is not None else None
         delay_points = float(getattr(self._cfg.execution, "entry_delay_points", 0.0) or 0.0) if self._cfg else 0.0
         return planned_limit_entry(pred, float(sig.entry), tick, side=sig.side, delay_points=delay_points)
+
+    def _entry_for_send(self, sig: Signal) -> float:
+        planned = self._planned_entry(sig)
+        tick = float(self._cfg.instrument.tick_size) if self._cfg else 5.0
+        bid = float(self.quote["bid"]) if self.quote and self.quote.get("bid") else None
+        ask = float(self.quote["ask"]) if self.quote and self.quote.get("ask") else None
+        return clamp_limit_to_book(sig.side, planned, bid, ask, tick)
+
+    def _signal_for_ui(self) -> dict[str, Any] | None:
+        packed = _signal_dict(self.last_signal)
+        if packed is None or self.last_signal is None or self.last_signal.side is Side.FLAT:
+            return packed
+        if self._cfg is None:
+            return packed
+        entry = self._planned_entry(self.last_signal)
+        stop, take = RiskCalculator(self._cfg).levels(self.last_signal.side, entry, None)
+        packed["entry"] = entry
+        packed["stop"] = stop
+        packed["take"] = take
+        return packed
 
     def _pending_row(self, sig: Signal, entry: float, stop: float, take: float, ts: datetime, n: float, ticket: Any) -> dict[str, Any]:
         return {
@@ -936,8 +995,13 @@ class RealtimeEngine:
         changed = abs(new_stop - old_stop) >= 1 or abs(new_take - old_take) >= 1
         ticket = pos.get("ticket")
         if changed and broker is not None and ticket:
+            prev = pos.get("_sltp_sent")
+            sent = (round(new_stop, 1), round(new_take, 1))
+            if prev == sent:
+                return False
             try:
                 broker.modify_sltp(int(ticket), new_stop, new_take)
+                pos["_sltp_sent"] = sent
             except Exception as exc:  # noqa: BLE001
                 self.error = f"protect: {exc}"
         return changed
@@ -998,20 +1062,31 @@ class RealtimeEngine:
 
     def tick(self, now: datetime | None = None) -> None:
         now = now or datetime.now()
-        self.last_tick = now.isoformat(timespec="seconds")
+        self.last_tick = now.isoformat(timespec="milliseconds")
         if self._policy is None or self._session is None:
             try:
                 self._prepare_policy()
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
                 self.wait_reason = "aguardando_login" if self.source == "mt5" else "aguardando_candle"
+                self._publish_snapshot()
                 return
         assert self._session is not None and self._policy is not None
         self._keep_today_only(now.date())
         if self.source == "stream":
             self._tick_stream(now)
-            return
-        self._tick_mt5(now)
+        else:
+            self._tick_mt5(now)
+        self._publish_snapshot()
+
+    def _should_fetch_bars(self, now: datetime) -> bool:
+        if self._frame is None or self._frame.empty:
+            return True
+        if self._ticks_mt5 <= 1:
+            return True
+        if self._last_bar_fetch is None:
+            return True
+        return (now - self._last_bar_fetch).total_seconds() >= BAR_FETCH_SEC
 
     def _tick_mt5(self, now: datetime) -> None:
         assert self._session is not None and self._policy is not None
@@ -1036,12 +1111,15 @@ class RealtimeEngine:
             self.quote = broker.quote() if hasattr(broker, "quote") else None
         except Exception:  # noqa: BLE001
             self.quote = None
+        if self.quote and self.quote.get("time_msc") is not None:
+            self.tick_msc = int(self.quote["time_msc"])
         self._ticks_mt5 += 1
-        need_bars = self._frame is None or self._frame.empty or self._ticks_mt5 == 1 or self._ticks_mt5 % 4 == 0
-        if need_bars:
+        slow = self._should_fetch_bars(now)
+        if slow:
             try:
                 candles = broker.last_closed_candles(broker.symbol, "m5", LOOKBACK_BARS)
                 self._frame = frame_from_candles(candles, source_file="mt5")
+                self._last_bar_fetch = now
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
                 self.wait_reason = session_wait_reason(
@@ -1067,7 +1145,8 @@ class RealtimeEngine:
         if getattr(ts, "tzinfo", None) is not None:
             ts = ts.replace(tzinfo=None)
         self.last_bar_time = ts.isoformat()
-        self._refresh_candles_tail()
+        if slow:
+            self._refresh_candles_tail()
         mark = self._mark_price()
         if mark is not None:
             last = last.copy()
@@ -1096,16 +1175,21 @@ class RealtimeEngine:
             session=self._session,
         )
         live_bar = bar_is_live(ts, now)
-        sig = self._policy.from_candles(self._frame)
-        self.last_signal = sig
-        self._remember_signal(sig, ts)
-        skip_enter = self._expire_pending(broker if send else None, sig, now)
+        if slow:
+            sig = self._policy.from_candles(self._frame)
+            self.last_signal = sig
+            self._remember_signal(sig, ts)
+        sig = self.last_signal
+        skip_enter = False
+        if slow:
+            skip_enter = self._expire_pending(broker if send else None, sig, now)
         if self.pending is not None and not send:
             self._fill_pending_paper(mark, now)
         if self.position is not None:
             ticket = self.position.get("ticket")
             live_ticket = bool(send and ticket)
-            changed = self._protect_open(broker if live_ticket else None, mark, closed, sig)
+            closed_row = closed if slow else None
+            changed = self._protect_open(broker if live_ticket else None, mark, closed_row, sig)
             if live_ticket:
                 if self._session.flatten_day(now):
                     self._flatten_live(broker, now)
@@ -1117,10 +1201,11 @@ class RealtimeEngine:
         new_bar = self.last_bar_time != self.processed_bar
         if not self._session.allows(now):
             self._enter_now = True
-        try_enter = (new_bar or self._enter_now) and not skip_enter
-        if try_enter and self._can_enter(now, live_mt5=send) and live_bar and sig.side is not Side.FLAT:
+        try_enter = slow and not skip_enter
+        placed = False
+        if try_enter and self._can_enter(now, live_mt5=send) and live_bar and sig is not None and sig.side is not Side.FLAT:
             try:
-                entry = self._planned_entry(sig)
+                entry = self._entry_for_send(sig)
                 plan = planned_order(sig, entry, *RiskCalculator(self._cfg).levels(sig.side, entry, None))
                 if plan:
                     if send:
@@ -1129,16 +1214,19 @@ class RealtimeEngine:
                         self._open_paper(sig, entry, now)
                         self._fill_pending_paper(mark, now)
                     self.error = None
+                    placed = True
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
         if self._session.allows(now):
             self._enter_now = False
-        if new_bar:
-            self.processed_bar = self.last_bar_time
-        self._ticks_since_save += 1
-        if self._ticks_since_save >= 3:
-            self._persist()
-            self._ticks_since_save = 0
+        if placed or (sig is not None and sig.side is Side.FLAT) or self.pending is not None or self.position is not None:
+            if new_bar or placed:
+                self.processed_bar = self.last_bar_time
+        if slow:
+            self._slow_ticks += 1
+            if self._slow_ticks >= 3:
+                self._persist()
+                self._slow_ticks = 0
 
     def _tick_stream(self, now: datetime) -> None:
         assert self._session is not None and self._policy is not None
@@ -1220,15 +1308,18 @@ class RealtimeEngine:
                 row = self._mark_only_row(last, mark)
             self._manage_open(None, row, ts, now)
         new_bar = self.last_bar_time != self.processed_bar
-        if new_bar and (not skip_enter) and self._can_enter(now, live_mt5=False) and live_bar:
+        placed = False
+        if (not skip_enter) and self._can_enter(now, live_mt5=False) and live_bar:
             if sig.side is not Side.FLAT:
-                entry = self._planned_entry(sig)
+                entry = self._entry_for_send(sig)
                 stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
                 if planned_order(sig, entry, stop, take):
                     self._open_paper(sig, entry, ts)
                     self._fill_pending_paper(mark, ts)
-        if new_bar:
-            self.processed_bar = self.last_bar_time
+                    placed = True
+        if placed or sig.side is Side.FLAT or self.pending is not None or self.position is not None:
+            if new_bar or placed:
+                self.processed_bar = self.last_bar_time
         self._ticks_since_save += 1
         if self._ticks_since_save >= 3:
             self._persist()
@@ -1244,7 +1335,7 @@ class RealtimeEngine:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     self.error = str(exc)
-                await asyncio.sleep(max(0.5, float(self.interval_sec)))
+                await asyncio.sleep(POLL_SEC)
         except asyncio.CancelledError:
             self.running = False
             raise
@@ -1255,12 +1346,15 @@ class RealtimeEngine:
                 await asyncio.to_thread(self._prepare_policy)
             except Exception as exc:  # noqa: BLE001
                 self.error = str(exc)
-        if self.running and self._task and not self._task.done():
-            self._enter_now = True
+        already = bool(self.running and self._task and not self._task.done())
+        same_session = bool(self.processed_bar and str(self.processed_bar)[:10] == date.today().isoformat())
+        if already:
+            if not same_session:
+                self._enter_now = True
             return self.snapshot()
         self.running = True
         self.done = False
-        self._enter_now = True
+        self._enter_now = not same_session
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(self.run_loop())
         return self.snapshot()

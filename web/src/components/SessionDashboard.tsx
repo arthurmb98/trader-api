@@ -271,6 +271,7 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
           <p className="mt-4 text-xs text-muted-foreground">
             {snap.n_trades} trades · {snap.n_wins} wins · acerto {pct(snap.win_rate)} · barra {snap.cursor}/{snap.n_bars}
           </p>
+          {snap.skip_reason ? <p className="mt-3 text-sm text-amber-400">{snap.skip_reason}</p> : null}
         </div>
         <div className="rounded-2xl border border-border bg-elevated/50 p-5 lg:col-span-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Ordem aberta</p>

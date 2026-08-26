@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import pandas as pd
@@ -19,7 +19,7 @@ from trader.backtest import (
 )
 from trader.broker import Mt5Broker
 from trader.config import AppConfig
-from trader.data import frame_from_candles, load_candles
+from trader.data import frame_from_candles, load_candles, merge_candle_frames, write_candles
 from trader.domain import Side, Signal, Trade
 from trader.ml import add_candle_features, add_true_range
 from trader.paths import DATASETS_DIR, RESULTS_DIR
@@ -121,6 +121,123 @@ def dataset_bounds(timeframe: str) -> tuple[date, date]:
     return bounds
 
 
+def clear_bounds_cache() -> None:
+    _BOUNDS_CACHE.clear()
+
+
+def coverage_fetch_range(
+    frame: pd.DataFrame,
+    start: date,
+    end: date,
+    warmup_days: int = WARMUP_DAYS,
+) -> tuple[date, date] | None:
+    """Inclusive calendar span still missing from the CSV, or None if the window is covered."""
+    need_from = start - timedelta(days=warmup_days)
+    if frame is None or frame.empty:
+        return need_from, end
+    ts = pd.to_datetime(frame["timestamp"])
+    have_min = ts.min().date()
+    have_max = ts.max().date()
+    in_window = (ts >= pd.Timestamp(start)) & (ts < pd.Timestamp(end) + pd.Timedelta(days=1))
+    covered = have_min <= need_from and have_max >= end and bool(in_window.any())
+    if covered:
+        return None
+    fetch_from = need_from if have_min > need_from else have_max
+    fetch_to = end if have_max < end else have_min
+    if have_min > need_from and have_max < end:
+        fetch_from, fetch_to = need_from, end
+    if fetch_from > fetch_to:
+        fetch_from, fetch_to = need_from, end
+    return fetch_from, fetch_to
+
+
+def _borrow_history_broker(cfg: AppConfig):
+    from trader.mt5_session import env_credentials, resolve_symbol
+    from trader.realtime import ENGINE
+
+    live = ENGINE._broker if ENGINE is not None else None
+    if live is not None and getattr(live, "_mt5", None) is not None:
+        return live, False
+    broker = Mt5Broker(cfg.mt5.symbol, cfg.mt5.magic or 20260818, cfg.mt5.deviation, cfg.mt5.filling, cfg.mt5.comment)
+    broker.connect(select_symbol=True, **env_credentials())
+    symbol = resolve_symbol(broker)
+    if symbol:
+        broker.use_symbol(symbol)
+    return broker, True
+
+
+def _release_history_broker(broker: Mt5Broker, owned: bool) -> None:
+    if not owned:
+        return
+    from trader.realtime import ENGINE
+
+    if ENGINE is not None and ENGINE._broker is not None:
+        return
+    broker.shutdown()
+
+
+def _copy_history(broker: Mt5Broker, timeframe: str, start: date, end: date) -> pd.DataFrame:
+    date_from = datetime.combine(start, time.min)
+    date_to = datetime.combine(end, time(23, 59, 59))
+    last_err: Exception | None = None
+    symbols = []
+    if broker.symbol:
+        symbols.append(broker.symbol)
+    if "WIN$" not in symbols:
+        symbols.append("WIN$")
+    for symbol in symbols:
+        try:
+            candles = broker.copy_rates_range(symbol, timeframe, date_from, date_to)
+            if candles:
+                return frame_from_candles(candles, source_file="mt5")
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+    raise RuntimeError(str(last_err) if last_err else "copy_rates_range vazio")
+
+
+def _copy_ticks(broker: Mt5Broker, start: date, end: date) -> list[tuple[datetime, float]]:
+    date_from = datetime.combine(start, time(9, 0))
+    date_to = datetime.combine(end, time(18, 0))
+    if hasattr(broker, "copy_ticks_range"):
+        return broker.copy_ticks_range(date_from, date_to)
+    return []
+
+
+def ensure_test_csv_covers(timeframe: str, start: date, end: date, cfg: AppConfig | None = None) -> Path:
+    """If the test CSV lacks the replay window, pull those days from the open MT5 and append."""
+    path = test_csv_for(timeframe)
+    existing = load_candles(path) if path.exists() else pd.DataFrame()
+    gap = coverage_fetch_range(existing, start, end)
+    if gap is None:
+        return path
+    if cfg is None:
+        _, cfg = resolve_live_config(DEFAULT_CASE, timeframe, DEFAULT_BANK)
+    fetch_from, fetch_to = gap
+    try:
+        broker, owned = _borrow_history_broker(cfg)
+    except Exception as exc:  # noqa: BLE001
+        csv_max = ""
+        if not existing.empty:
+            csv_max = pd.to_datetime(existing["timestamp"]).max().date().isoformat()
+        hint = f" (CSV vai até {csv_max})" if csv_max else ""
+        raise RuntimeError(
+            f"Datas {fetch_from.isoformat()} → {fetch_to.isoformat()} não estão no dataset{hint}. "
+            f"Abra o MT5 logado para baixar e gravar em {path.name}. ({exc})"
+        ) from exc
+    try:
+        fresh = _copy_history(broker, timeframe, fetch_from, fetch_to)
+    finally:
+        _release_history_broker(broker, owned)
+    if fresh.empty:
+        raise RuntimeError(
+            f"MT5 não devolveu candles de {fetch_from.isoformat()} a {fetch_to.isoformat()}."
+        )
+    merged = merge_candle_frames(existing, fresh)
+    write_candles(merged, path)
+    clear_bounds_cache()
+    return path
+
+
 def default_window(min_date: date, max_date: date) -> tuple[date, date]:
     start = add_months(max_date, -1)
     if start < min_date:
@@ -148,15 +265,17 @@ def validate_live_params(
         raise ValueError("source deve ser paper ou mt5")
     window_start, window_end = start, end
     if source == "paper":
-        min_date, max_date = dataset_bounds(timeframe)
+        today = date.today()
+        min_date, _csv_max = dataset_bounds(timeframe)
+        floor = min(min_date, WALL_DATE)
         if window_start is None or window_end is None:
-            window_start, window_end = default_window(min_date, max_date)
+            window_start, window_end = default_window(floor, today)
         if window_end < window_start:
             raise ValueError("Data final deve ser maior ou igual à data inicial")
-        if window_start < min_date:
-            raise ValueError(f"Data inicial mínima: {min_date.isoformat()}")
-        if window_end > max_date:
-            raise ValueError(f"Data final máxima: {max_date.isoformat()}")
+        if window_start < floor:
+            raise ValueError(f"Data inicial mínima: {floor.isoformat()}")
+        if window_end > today:
+            raise ValueError(f"Data final máxima: {today.isoformat()}")
         if window_end > add_months(window_start, 3):
             raise ValueError("Janela limitada a 3 meses (treino trimestral)")
     return case, timeframe, bank, window_start, window_end
@@ -164,15 +283,19 @@ def validate_live_params(
 
 def live_meta(timeframe: str = DEFAULT_TIMEFRAME) -> dict[str, Any]:
     tf = timeframe if timeframe in LIVE_TIMEFRAMES else DEFAULT_TIMEFRAME
-    min_date, max_date = dataset_bounds(tf)
-    start, end = default_window(min_date, max_date)
+    min_date, csv_max = dataset_bounds(tf)
+    today = date.today()
+    max_date = max(csv_max, today)
+    floor = min(min_date, WALL_DATE)
+    start, end = default_window(floor, max_date)
     return {
         "banks": list(LIVE_BANKS),
         "cases": [{"key": key, "label": CASE_LABEL[key]} for key in LIVE_CASES],
         "timeframes": [{"key": key, "label": TF_LABEL[key]} for key in LIVE_TIMEFRAMES],
         "timeframe": tf,
-        "min_date": min_date.isoformat(),
+        "min_date": floor.isoformat(),
         "max_date": max_date.isoformat(),
+        "csv_max_date": csv_max.isoformat(),
         "default_start": start.isoformat(),
         "default_end": end.isoformat(),
         "max_span_months": 3,
@@ -539,7 +662,7 @@ def paper_batch_snapshot(
     if window_start is None or window_end is None:
         raise ValueError("Janela de datas obrigatória no paper.")
     name, cfg = resolve_live_config(case, timeframe, bank)
-    path = test_csv_for(timeframe)
+    path = ensure_test_csv_covers(timeframe, window_start, window_end, cfg)
     if not path.exists():
         path = cfg.resolve_csv(cfg.data.test_csv)
     full = load_candles(path)
@@ -559,12 +682,27 @@ def paper_batch_snapshot(
     use_guard = str(getattr(cfg.execution, "decision", "ml") or "ml") == "ml_guard"
     lot = parse_lot(lot)
     scaled = lot == LOT_SCALED
+    marks: list[tuple[datetime, float]] | None = None
+    span_days = (window_end - window_start).days
+    if span_days <= 2:
+        try:
+            broker, owned = _borrow_history_broker(cfg)
+            try:
+                marks = _copy_ticks(broker, window_start, window_end)
+            finally:
+                _release_history_broker(broker, owned)
+            if not marks:
+                marks = None
+        except Exception:  # noqa: BLE001
+            marks = None
+        cfg = overlay_config(cfg, account__contract_cost=0.0)
     metrics = BacktestEngine(cfg).run(
         week,
         week_pred,
         compound=scaled,
         strange_mask=week_strange if use_guard else None,
         compound_step=LOT_STEP if scaled else None,
+        marks=marks,
     )
     return snapshot_from_metrics(
         metrics,
@@ -811,16 +949,16 @@ class LiveEngine:
         if self.source == "mt5":
             self._frame = self._load_mt5()
         else:
-            path = test_csv_for(self.timeframe)
-            if not path.exists():
-                path = cfg.resolve_csv(cfg.data.test_csv)
-            full = load_candles(path)
             start = self.window_start
             end = self.window_end
             if start is None or end is None:
-                min_date, max_date = dataset_bounds(self.timeframe)
-                start, end = default_window(min_date, max_date)
+                min_date, _csv_max = dataset_bounds(self.timeframe)
+                start, end = default_window(min_date, date.today())
                 self.window_start, self.window_end = start, end
+            path = ensure_test_csv_covers(self.timeframe, start, end, cfg)
+            if not path.exists():
+                path = cfg.resolve_csv(cfg.data.test_csv)
+            full = load_candles(path)
             self._frame, cursor = slice_paper_frame(full, start, end)
         if self._frame is None or self._frame.empty:
             raise RuntimeError("Sem candles para a sessão ao vivo.")

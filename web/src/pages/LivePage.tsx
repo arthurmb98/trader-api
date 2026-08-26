@@ -170,6 +170,7 @@ export function LivePage() {
   const banks = meta?.banks?.length ? meta.banks : FALLBACK_BANKS
   const rangeMin = meta?.min_date || RANGE_MIN
   const rangeMax = meta?.max_date || new Date().toISOString().slice(0, 10)
+  const csvMax = meta?.csv_max_date || ''
   const startMax = end ? minIso(end, rangeMax) : rangeMax
   const endMin = start ? maxIso(start, rangeMin) : rangeMin
   const endMax = start ? minIso(rangeMax, addMonths(start, 3)) : rangeMax
@@ -188,7 +189,9 @@ export function LivePage() {
   const locked = busy || snap.running
   const windowText =
     source === 'paper' && start && end
-      ? `Janela ${dayLabel(start)} → ${dayLabel(end)}`
+      ? `Janela ${dayLabel(start)} → ${dayLabel(end)}${
+          csvMax && end > csvMax ? ` · MT5 preenche após ${dayLabel(csvMax)}` : ''
+        }`
       : 'MT5 ao vivo (sem janela de CSV)'
 
   const status =
@@ -213,6 +216,9 @@ export function LivePage() {
         <p className="mt-2 max-w-3xl text-muted-foreground">
           {status}. {CASE_LABEL[caseKey]} · {TF_LABEL[timeframe]} · {LOT_LABEL[lot]}. {windowText}
           {snap.last_bar_time ? ` · candle ${clock(snap.last_bar_time)}` : ''}
+          {source === 'paper'
+            ? ' Datas que ainda não estão no CSV são baixadas do MT5 (terminal aberto) e gravadas em datasets.'
+            : ''}
         </p>
         <div className="mt-4 flex flex-wrap items-end gap-2">
           <Field label="Caso">

@@ -284,11 +284,13 @@ class Mt5Broker(Broker):
         if mark <= 0:
             return None
         stamp = getattr(tick, "time", None)
+        msc = getattr(tick, "time_msc", None)
         return {
             "bid": bid or mark,
             "ask": ask or mark,
             "last": mark,
             "time": _mt5_time(stamp).isoformat() if stamp else None,
+            "time_msc": int(msc) if msc else None,
         }
 
     def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
@@ -321,6 +323,56 @@ class Mt5Broker(Broker):
         if rates is None or len(rates) == 0:
             raise RuntimeError(f"copy_rates_range falhou: {mt5.last_error()}")
         return self._rows_to_candles(symbol, rates)
+
+    def copy_ticks_range(
+        self,
+        date_from: datetime,
+        date_to: datetime,
+        symbol: str | None = None,
+    ) -> list[tuple[datetime, float]]:
+        mt5 = self._require()
+        name = symbol or self.symbol
+        flags = int(getattr(mt5, "COPY_TICKS_ALL", 0))
+        rows = mt5.copy_ticks_range(name, date_from, date_to, flags)
+        if rows is None or len(rows) == 0:
+            return []
+        out: list[tuple[datetime, float]] = []
+        for row in rows:
+            last = float(row["last"] or 0)
+            bid = float(row["bid"] or 0)
+            ask = float(row["ask"] or 0)
+            px = last or bid or ask
+            if px <= 0:
+                continue
+            msc = int(row["time_msc"] or 0)
+            if msc > 0:
+                ts = datetime.fromtimestamp(msc / 1000.0)
+            else:
+                ts = _mt5_time(row["time"])
+            out.append((ts, px))
+        return out
+
+    def ticks_since(self, from_msc: int, count: int = 256) -> list[tuple[datetime, float]]:
+        mt5 = self._require()
+        start = datetime.fromtimestamp(max(0, int(from_msc)) / 1000.0)
+        flags = int(getattr(mt5, "COPY_TICKS_ALL", 0))
+        rows = mt5.copy_ticks_from(self.symbol, start, max(1, int(count)), flags)
+        if rows is None or len(rows) == 0:
+            return []
+        out: list[tuple[datetime, float]] = []
+        for row in rows:
+            msc = int(row["time_msc"] or 0)
+            if msc <= from_msc:
+                continue
+            last = float(row["last"] or 0)
+            bid = float(row["bid"] or 0)
+            ask = float(row["ask"] or 0)
+            px = last or bid or ask
+            if px <= 0:
+                continue
+            ts = datetime.fromtimestamp(msc / 1000.0) if msc else _mt5_time(row["time"])
+            out.append((ts, px))
+        return out
 
     def _filling_const(self) -> int:
         mt5 = self._require()
@@ -355,7 +407,7 @@ class Mt5Broker(Broker):
             "tp": float(take),
             "magic": int(self.magic),
             "comment": f"{self.comment} limit",
-            "type_time": mt5.ORDER_TIME_GTC,
+            "type_time": int(getattr(mt5, "ORDER_TIME_DAY", 1)),
             "type_filling": self._pending_filling_const(),
         }
 

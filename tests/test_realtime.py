@@ -309,6 +309,7 @@ class _FakeWinBroker:
         self.cancelled: list = []
         self.last_request: dict | None = None
         self.deals = 0
+        self.bar_fetches = 0
 
     def connect(self, **kwargs):  # noqa: ANN003
         del kwargs
@@ -340,6 +341,7 @@ class _FakeWinBroker:
 
     def last_closed_candles(self, symbol: str, timeframe: str, count: int) -> list:
         del symbol, timeframe
+        self.bar_fetches += 1
         return list(self._candles[-max(count, 1) :])
 
     def quote(self) -> dict:
@@ -353,6 +355,7 @@ class _FakeWinBroker:
             "ask": float(last.close) + 5,
             "last": float(last.close),
             "time": last.timestamp.isoformat(),
+            "time_msc": int(last.timestamp.timestamp() * 1000),
         }
 
     def open_positions(self) -> list:
@@ -1114,8 +1117,8 @@ def test_prd_limit_uses_pred_open_not_quote() -> None:
     assert fake.last_request["type"] == "BUY_LIMIT"
     from trader.execution import planned_limit_entry as _plan
 
-    want = _plan(140_010.0, 140_000.0, 5.0, side=Side.BUY, delay_points=15.0)
-    assert want == 140_025.0
+    want = _plan(140_010.0, 140_000.0, 5.0, side=Side.BUY, delay_points=10.0)
+    assert want == 140_020.0
     assert fake.last_request["price"] == want
     assert fake.last_request["sl"] == want - 100.0
     assert fake.last_request["tp"] == want + 200.0
@@ -1132,11 +1135,96 @@ def test_limit_fill_price_matches_study_and_live() -> None:
     assert limit_fill_price(Side.BUY, 140_000.0, 139_990.0, 140_040.0, 139_980.0) == 139_990.0
     assert limit_fill_price(Side.SELL, 140_000.0, 140_010.0, 140_020.0, 139_990.0) == 140_010.0
     assert limit_fill_price(Side.SELL, 140_000.0, 139_980.0, 139_995.0, 139_960.0) is None
-    # 15 pts = R$3 on one mini; buy pays up, sell sells down.
+    # 10 pts = R$2 on one mini; buy pays up, sell sells down.
+    assert delay_band_points(5.0, 10.0) == 10.0
+    assert delay_band_points(5.0, 10.0) * 0.2 == 2.0
     assert delay_band_points(5.0, 15.0) == 15.0
-    assert delay_band_points(5.0, 15.0) * 0.2 == 3.0
-    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.BUY, delay_points=15.0) == 177_645.0
-    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.SELL, delay_points=15.0) == 177_615.0
+    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.BUY, delay_points=10.0) == 177_640.0
+    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.SELL, delay_points=10.0) == 177_620.0
     cfg = load_named_config("best_candles_m5_1000_a")
-    assert float(cfg.execution.entry_delay_points) == 15.0
+    assert float(cfg.execution.entry_delay_points) == 10.0
+    from trader.execution import clamp_limit_to_book
+
+    assert clamp_limit_to_book(Side.BUY, 177_410.0, 177_380.0, 177_385.0, 5.0) == 177_385.0
+    assert clamp_limit_to_book(Side.BUY, 177_410.0, 177_420.0, 177_425.0, 5.0) == 177_410.0
+    assert clamp_limit_to_book(Side.SELL, 177_380.0, 177_390.0, 177_395.0, 5.0) == 177_390.0
+
+
+def test_skip_reason_when_daily_trade_cap_hit() -> None:
+    from trader.domain import PredictedCandle
+
+    engine = RealtimeEngine()
+    engine._prepare_policy()
+    engine.trades_today = int(engine._cfg.risk.max_trades_per_day)
+    engine.wait_reason = "pronto"
+    engine.last_signal = Signal(
+        Side.BUY,
+        177_395.0,
+        177_295.0,
+        177_595.0,
+        "seguir_previsao_proxima_abertura",
+        PredictedCandle(177_395.0, 177_450.0, 177_350.0, 177_400.0),
+    )
+    text = engine._skip_reason()
+    assert text is not None
+    assert "10" in text
+    assert "teto" in text.lower()
+
+
+def test_prd_sends_even_if_bar_already_processed() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    last = fake._candles[-1]
+    engine.processed_bar = last.timestamp.isoformat()
+    engine._enter_now = False
+    engine.tick(now=datetime(2026, 8, 25, 14, 36))
+    assert fake.sent == 1
+    assert engine.pending is not None
+    assert engine.position is None
+
+
+def test_fast_tick_does_not_refetch_m5_every_cycle() -> None:
+    engine = RealtimeEngine()
+    fake = _FakeWinBroker()
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    t0 = datetime(2026, 8, 25, 14, 30, 0)
+    engine.tick(now=t0)
+    first = fake.bar_fetches
+    assert first >= 1
+    engine.tick(now=t0.replace(microsecond=20_000))
+    engine.tick(now=t0.replace(microsecond=40_000))
+    assert fake.bar_fetches == first
+    engine.tick(now=datetime(2026, 8, 25, 14, 31, 1))
+    assert fake.bar_fetches == first + 1
+
+
+def test_modify_sltp_skips_duplicate_levels() -> None:
+    engine = RealtimeEngine()
+    engine._prepare_policy()
+    fake = _FakeWinBroker()
+    engine._broker = fake  # type: ignore[assignment]
+    engine.position = {
+        "side": Side.BUY,
+        "entry": 177_000.0,
+        "stop": 176_900.0,
+        "take": 177_200.0,
+        "orig_stop": 176_900.0,
+        "orig_take": 177_200.0,
+        "extreme": 177_000.0,
+        "ticket": 99,
+        "entry_bar": "2026-08-25T14:30:00",
+    }
+    engine.last_bar_time = "2026-08-25T14:30:00"
+    engine._protect_open(fake, 177_010.0, None, None)  # type: ignore[arg-type]
+    engine._protect_open(fake, 177_010.0, None, None)  # type: ignore[arg-type]
+    assert len(fake.modified) <= 1
 
