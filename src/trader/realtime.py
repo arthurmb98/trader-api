@@ -30,6 +30,7 @@ from trader.mt5_session import (
     DEMO_PLAYBOOK,
     LOOKBACK_BARS,
     bar_is_live,
+    bar_is_today,
     env_credentials,
     next_gold_window,
     planned_order,
@@ -605,6 +606,25 @@ class RealtimeEngine:
                 return False
         return True
 
+    def _evaluate_signal(self, last: pd.Series, ts: datetime, *, record: bool, may_enter: bool) -> None:
+        """Update the visible signal; only open paper when may_enter (gold hours, after arm)."""
+        if self._policy is None or self._cfg is None or self._frame is None or self._frame.empty:
+            return
+        sig = self._policy.from_candles(self._frame)
+        self.last_signal = sig
+        if record:
+            self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
+            self.signals = self.signals[-200:]
+        if not may_enter or sig.side is Side.FLAT:
+            return
+        entry = float(last["Fechamento"])
+        stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
+        if not planned_order(sig, entry, stop, take):
+            return
+        self._open_paper(sig, entry, ts)
+        if self.position is not None:
+            self._manage_open(None, last, ts, ts)
+
     def _n_contracts(self) -> int:
         n = size_contracts(self.bank, self.lot)
         self.max_contracts = max(int(self.max_contracts), n)
@@ -831,6 +851,7 @@ class RealtimeEngine:
         self.last_bar_time = ts.isoformat()
         self._refresh_candles_tail()
         live_bar = self._stream.origin in {"ingest", "http", "yahoo", "demo"} and bar_is_live(ts, now)
+        today_bar = bar_is_today(ts, now)
         self.wait_reason = session_wait_reason(
             connected=True,
             account=True,
@@ -838,31 +859,23 @@ class RealtimeEngine:
             symbol=self._stream.symbol,
             trade_allowed=True,
             now=now,
-            last_bar=ts if live_bar else None,
+            last_bar=ts if (live_bar or today_bar) else None,
             in_position=self.position is not None,
             session=self._session,
         )
-        if not live_bar:
-            if not self._session.allows(now) and now.time().hour < 9:
-                self.wait_reason = "mercado_fechado"
-            self.last_bar_time = None
-            self.candles_tail = []
-            return
-        if self.position is not None:
+        if not live_bar and not self._session.allows(now) and now.time().hour < 9:
+            self.wait_reason = "mercado_fechado"
+        if self.position is not None and (live_bar or today_bar):
             self._manage_open(None, last, ts, now)
         new_bar = self.last_bar_time != self.processed_bar
         tradable = self.armed_at is None or _bar_closes_after(ts, self.armed_at)
-        if new_bar and tradable and self._can_enter(now, live_mt5=False) and live_bar:
-            sig = self._policy.from_candles(self._frame)
-            self.last_signal = sig
-            self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
-            self.signals = self.signals[-200:]
-            if sig.side is not Side.FLAT:
-                entry = float(last["Fechamento"])
-                stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
-                if planned_order(sig, entry, stop, take):
-                    self._open_paper(sig, entry, ts)
-                    self._manage_open(None, last, ts, now)
+        if new_bar and today_bar:
+            self._evaluate_signal(
+                last,
+                ts,
+                record=tradable,
+                may_enter=bool(tradable and live_bar and self._can_enter(now, live_mt5=False)),
+            )
         if new_bar:
             self.processed_bar = self.last_bar_time
         self._ticks_since_save += 1
@@ -1004,20 +1017,21 @@ class RealtimeEngine:
                 self._manage_open(None, last, ts, ts)
             new_bar = self.last_bar_time != self.processed_bar
             tradable = arm_from is not None and _bar_closes_after(ts, arm_from)
-            if new_bar and tradable and self._can_enter(ts, live_mt5=False):
-                sig = self._policy.from_candles(self._frame)
-                self.last_signal = sig
-                self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
-                self.signals = self.signals[-200:]
-                if sig.side is not Side.FLAT:
-                    entry = float(last["Fechamento"])
-                    stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
-                    if planned_order(sig, entry, stop, take):
-                        self._open_paper(sig, entry, ts)
-                        if self.position is not None:
-                            self._manage_open(None, last, ts, ts)
+            if new_bar and tradable:
+                self._evaluate_signal(
+                    last,
+                    ts,
+                    record=True,
+                    may_enter=self._can_enter(ts, live_mt5=False),
+                )
             if new_bar:
                 self.processed_bar = self.last_bar_time
+        if self._frame is not None and not self._frame.empty and self.last_signal is None:
+            last = self._frame.iloc[-1]
+            ts = pd.Timestamp(last["timestamp"]).to_pydatetime()
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.replace(tzinfo=None)
+            self._evaluate_signal(last, ts, record=False, may_enter=False)
         last_bar = None
         if self.last_bar_time:
             try:

@@ -468,6 +468,18 @@ def test_replay_today_does_not_backfill_before_arm() -> None:
     assert all(not str(t.get("entry_time") or "").startswith("2026-08-24T10:") for t in later.trades)
 
 
+def test_signal_shows_outside_gold_without_orders() -> None:
+    lunch = RealtimeEngine()
+    lunch.replay_today(datetime(2026, 8, 24, 13, 39), armed_at=datetime(2026, 8, 24, 12, 0))
+    assert lunch.trades == []
+    assert lunch.position is None
+    assert lunch.last_signal is not None
+    packed = lunch.snapshot()["signal"]
+    assert packed is not None
+    assert packed.get("side") in {"BUY", "SELL", "FLAT"}
+    assert packed.get("reason")
+
+
 def test_replay_today_allows_bars_that_close_after_arm() -> None:
     engine = RealtimeEngine()
     engine.replay_today(datetime(2026, 8, 24, 10, 10), armed_at=datetime(2026, 8, 24, 10, 0))
