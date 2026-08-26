@@ -163,7 +163,7 @@ function PeriodBars({ title, rows }: { title: string; rows: PeriodRow[] }) {
             <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
             <Tooltip
               contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-              formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+              formatter={(value) => brl(Number(value ?? 0))}
             />
             <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
               {data.map((row) => (
@@ -612,7 +612,7 @@ export function StudyPage() {
                       <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
                       <Tooltip
                         contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-                        formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+                        formatter={(value) => brl(Number(value ?? 0))}
                       />
                       <Area type="monotone" dataKey="bank" stroke="#058ef2" fill="url(#bank)" />
                     </AreaChart>
@@ -629,7 +629,7 @@ export function StudyPage() {
                       <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} />
                       <Tooltip
                         contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-                        formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+                        formatter={(value) => brl(Number(value ?? 0))}
                       />
                       <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
                         {hourly.map((row) => (

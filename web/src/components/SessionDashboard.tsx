@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -106,7 +106,7 @@ function PeriodChart({ title, rows }: { title: string; rows: { t: string; pnl: n
             <YAxis tick={{ fill: '#a1a1aa', fontSize: 11 }} width={56} />
             <Tooltip
               contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-              formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+              formatter={(value) => brl(Number(value ?? 0))}
             />
             <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
               {rows.map((row) => (
@@ -157,15 +157,19 @@ export function SessionNav() {
 }
 
 export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHint: string }) {
+  const [chartSnap, setChartSnap] = useState(snap)
+  useEffect(() => {
+    setChartSnap(snap)
+  }, [snap.last_bar_time, snap.n_trades, snap.signals[0]?.t])
   const equity = useMemo(
-    () => snap.equity.map((row) => ({ ...row, label: row.t.replace('T', ' ').slice(5, 16) })),
-    [snap.equity],
+    () => chartSnap.equity.map((row) => ({ ...row, label: row.t.replace('T', ' ').slice(5, 16) })),
+    [chartSnap.equity],
   )
-  const periodLevels = (snap.periods?.levels?.length ? snap.periods.levels : ['daily']) as PeriodLevel[]
+  const periodLevels = (chartSnap.periods?.levels?.length ? chartSnap.periods.levels : ['daily']) as PeriodLevel[]
   const periodCharts = useMemo(
     () =>
       periodLevels.map((level) => {
-        const rows = snap.periods?.series?.[level] ?? (level === 'daily' ? snap.daily : [])
+        const rows = chartSnap.periods?.series?.[level] ?? (level === 'daily' ? chartSnap.daily : [])
         return {
           level,
           rows: rows.map((row) => ({
@@ -174,11 +178,11 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
           })),
         }
       }),
-    [periodLevels, snap.daily, snap.periods],
+    [periodLevels, chartSnap.daily, chartSnap.periods],
   )
   const candles = useMemo(
-    () => snap.candles.map((row) => ({ ...row, label: row.t.replace('T', ' ').slice(11, 16) })),
-    [snap.candles],
+    () => chartSnap.candles.map((row) => ({ ...row, label: row.t.replace('T', ' ').slice(11, 16) })),
+    [chartSnap.candles],
   )
 
   return (
@@ -198,12 +202,14 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
           }
         />
         <Kpi
-          label="Banca paper"
-          value={brl(snap.bank)}
+          label={snap.order_mode === 'prd' ? 'Lote' : 'Banca paper'}
+          value={snap.order_mode === 'prd' ? `${snap.contracts} mini` : brl(snap.bank)}
           hint={
-            asLot(snap.lot) === 'scaled'
-              ? `${brl(snap.initial_bank)} inicial · ${snap.contracts} mini agora · teto ${snap.max_contracts}`
-              : `${brl(snap.initial_bank)} inicial · sempre 1 mini`
+            snap.order_mode === 'prd'
+              ? `${snap.contracts} mini · banca MT5 ${brl(Number(snap.mt5?.bank ?? snap.mt5?.equity ?? snap.mt5?.balance ?? 0))} · teto ${snap.max_contracts}`
+              : asLot(snap.lot) === 'scaled'
+                ? `${brl(snap.initial_bank)} inicial · ${snap.contracts} mini agora · teto ${snap.max_contracts}`
+                : `${brl(snap.initial_bank)} inicial · sempre 1 mini`
           }
         />
         <Kpi
@@ -346,7 +352,7 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
                 <YAxis tick={{ fill: '#a1a1aa', fontSize: 11 }} width={56} />
                 <Tooltip
                   contentStyle={{ background: '#1c1c1e', border: '1px solid #3a3a3c', borderRadius: 12 }}
-                  formatter={(v: number | undefined) => brl(Number(v ?? 0))}
+                  formatter={(value) => brl(Number(value ?? 0))}
                 />
                 <Area type="monotone" dataKey="bank" stroke="#058ef2" fill="#058ef233" />
               </AreaChart>

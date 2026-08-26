@@ -293,8 +293,10 @@ class _FakeWinBroker:
 
     def __init__(self) -> None:
         self.sent = 0
+        self.last_volume = 0.0
         self.demo = True
         self.allow_send = False
+        self.bank = 1000.0
         self._candles: list = []
 
     def connect(self, **kwargs):  # noqa: ANN003
@@ -307,8 +309,10 @@ class _FakeWinBroker:
             "demo": self.demo,
             "login": 123,
             "server": "GENIAL-DEMO" if self.demo else "GenialInvestimentos-PRD",
-            "balance": 5000.0,
-            "equity": 5000.0,
+            "balance": float(self.bank),
+            "equity": float(self.bank),
+            "margin_free": float(self.bank),
+            "bank": float(self.bank),
         }
 
     def terminal_payload(self) -> dict:
@@ -341,8 +345,10 @@ class _FakeWinBroker:
     def open_positions(self) -> list:
         return []
 
-    def send(self, *args, **kwargs):  # noqa: ANN002, ANN003
+    def send(self, signal=None, volume=1.0, *args, **kwargs):  # noqa: ANN002, ANN003
+        del signal, args, kwargs
         self.sent += 1
+        self.last_volume = float(volume)
         if not self.allow_send:
             raise AssertionError("order_send nao pode rodar no paper")
         return {"retcode": 10009, "order": 77, "deal": 77, "comment": "ok"}
@@ -551,6 +557,7 @@ def test_prd_sends_on_real_account_in_gold() -> None:
     assert engine.order_mode == "prd"
     assert engine.snapshot()["can_send"] is True
     assert fake.sent == 1
+    assert fake.last_volume == 1
     assert engine.position is not None
     assert engine.position.get("ticket") == 77
 
@@ -569,4 +576,85 @@ def test_enviar_on_real_still_refuses_send() -> None:
     except RuntimeError as exc:
         assert "real" in str(exc).lower() or "Produção" in str(exc) or "prd" in str(exc).lower()
     assert fake.sent == 0
+
+
+def test_prd_sizes_minis_from_mt5_bank_not_paper() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    engine.bank = 1000.0
+    engine.lot = "scaled"
+    engine.mt5_info["bank"] = 2000.0
+    engine.mt5_info["demo"] = False
+    assert engine._n_contracts() == 2
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    fake.bank = 2000.0
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 1
+    assert fake.last_volume == 2
+    assert engine.position is not None
+    assert float(engine.position.get("contracts") or 0) == 2
+    assert engine.snapshot()["contracts"] == 2
+
+
+def test_paper_sizes_from_local_bank_and_never_sends() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("paper")
+    engine.bank = 2000.0
+    engine.lot = "scaled"
+    engine.mt5_info["bank"] = 1000.0
+    engine.mt5_info["demo"] = False
+    assert engine._n_contracts() == 2
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.bank = 1000.0
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 0
+    assert engine.position is not None
+    assert engine.position.get("ticket") is None
+    assert float(engine.position.get("contracts") or 0) == 2
+
+
+def test_mt5_deposit_does_not_change_daily_average() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    engine.bank = 1000.0
+    engine.initial_bank = 1000.0
+    engine.lot = "scaled"
+    engine.mt5_info["bank"] = 1000.0
+    engine.trades = [
+        {
+            "side": "BUY",
+            "entry_time": "2026-08-26T14:35:00",
+            "exit_time": "2026-08-26T14:40:00",
+            "entry": 140000.0,
+            "exit": 140200.0,
+            "points": 200.0,
+            "pnl": 39.0,
+            "result": "win",
+            "reason": "gain",
+            "contracts": 1,
+        }
+    ]
+    before = engine.snapshot()
+    engine.mt5_info["bank"] = 2000.0
+    engine.mt5_info["equity"] = 2000.0
+    engine.mt5_info["balance"] = 2000.0
+    after = engine.snapshot()
+    assert before["avg_daily"] == 39.0
+    assert after["avg_daily"] == 39.0
+    assert after["today_pnl"] == before["today_pnl"]
+    assert after["contracts"] == 2
+    assert after["n_trades"] == 1
 

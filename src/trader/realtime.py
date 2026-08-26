@@ -605,8 +605,27 @@ class RealtimeEngine:
                 return False
         return True
 
+    def _live_bank(self) -> float | None:
+        info = self.mt5_info or {}
+        for key in ("bank", "equity", "balance", "margin_free"):
+            raw = info.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
     def _n_contracts(self) -> float:
-        n = float(size_contracts(self.bank, self.lot))
+        bank = self.bank
+        if self._will_send():
+            live = self._live_bank()
+            if live is not None:
+                bank = live
+        n = float(size_contracts(bank, self.lot))
         self.max_contracts = max(float(self.max_contracts), n)
         return n
 

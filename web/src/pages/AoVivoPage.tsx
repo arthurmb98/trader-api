@@ -30,6 +30,8 @@ function realBank(mt5?: LiveSnap['mt5'] | null) {
 }
 
 function pushLog(line: string, extra?: unknown) {
+  if (line === 'snap_not_running' || line === 'poll_fail') return
+  if (line === 'window_error' && String(extra).includes('out of memory')) return
   console.log('[ao-vivo]', line, extra ?? '')
   void apiFetch('/api/realtime/ui-log', {
     method: 'POST',
@@ -57,6 +59,7 @@ export function AoVivoPage() {
   const pendingMode = useRef<OrderMode | null>(null)
   const booted = useRef(false)
   const busyRef = useRef(false)
+  const pullingRef = useRef(false)
   const wantArmed = useRef<boolean | null>(null)
   const toldEmptyBank = useRef(false)
 
@@ -84,7 +87,8 @@ export function AoVivoPage() {
   }
 
   const pull = async () => {
-    if (busyRef.current) return
+    if (busyRef.current || pullingRef.current) return
+    pullingRef.current = true
     try {
       const res = await apiFetch('/api/realtime')
       if (!res.ok) {
@@ -95,11 +99,12 @@ export function AoVivoPage() {
       applySnap(json, 'poll')
     } catch (err) {
       setOffline(true)
-      pushLog('poll_fail', err instanceof Error ? err.message : err)
       setSnap((prev) => ({
         ...prev,
         error: err instanceof Error ? err.message : 'API offline',
       }))
+    } finally {
+      pullingRef.current = false
     }
   }
 
@@ -165,7 +170,7 @@ export function AoVivoPage() {
     void boot()
     const id = window.setInterval(() => {
       void pull()
-    }, 1000)
+    }, 2000)
     return () => {
       window.removeEventListener('error', onErr)
       window.removeEventListener('unhandledrejection', onRej)
