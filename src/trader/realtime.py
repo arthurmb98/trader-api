@@ -874,7 +874,12 @@ class RealtimeEngine:
                 last,
                 ts,
                 record=tradable,
-                may_enter=bool(tradable and live_bar and self._can_enter(now, live_mt5=False)),
+                may_enter=bool(
+                    tradable
+                    and live_bar
+                    and self._can_enter(now, live_mt5=False)
+                    and self._session.allows(ts)
+                ),
             )
         if new_bar:
             self.processed_bar = self.last_bar_time
