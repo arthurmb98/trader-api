@@ -8,12 +8,33 @@ def _is_buy(side: Side | str) -> bool:
     return side is Side.BUY or str(side) == "BUY"
 
 
-def planned_limit_entry(pred_open: float | None, last_close: float, tick: float) -> float:
-    """LIMIT price for the next bar: model pred_open, else last close."""
+def delay_band_points(tick: float, delay_points: float) -> float:
+    """Worse-side band in points, snapped to tick (WIN mini 15 pts = R$3)."""
+    pts = float(delay_points or 0.0)
+    if pts <= 0 or tick <= 0:
+        return 0.0
+    return max(float(tick), round_to_tick(pts, tick))
+
+
+def planned_limit_entry(
+    pred_open: float | None,
+    last_close: float,
+    tick: float,
+    *,
+    side: Side | str | None = None,
+    delay_points: float = 0.0,
+) -> float:
+    """LIMIT for the next bar: pred_open, plus a shallow worse-side band for send delay."""
     raw = float(last_close)
     if pred_open is not None and pred_open == pred_open:
         raw = float(pred_open)
-    return round_to_tick(raw, tick)
+    base = round_to_tick(raw, tick)
+    band = delay_band_points(tick, delay_points)
+    if band <= 0 or side is None:
+        return base
+    if _is_buy(side):
+        return base + band
+    return base - band
 
 
 def limit_fill_price(

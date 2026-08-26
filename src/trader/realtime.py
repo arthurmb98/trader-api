@@ -765,7 +765,8 @@ class RealtimeEngine:
     def _planned_entry(self, sig: Signal) -> float:
         tick = float(self._cfg.instrument.tick_size) if self._cfg else 5.0
         pred = float(sig.predicted.open) if sig.predicted is not None else None
-        return planned_limit_entry(pred, float(sig.entry), tick)
+        delay_points = float(getattr(self._cfg.execution, "entry_delay_points", 0.0) or 0.0) if self._cfg else 0.0
+        return planned_limit_entry(pred, float(sig.entry), tick, side=sig.side, delay_points=delay_points)
 
     def _pending_row(self, sig: Signal, entry: float, stop: float, take: float, ts: datetime, n: float, ticket: Any) -> dict[str, Any]:
         return {

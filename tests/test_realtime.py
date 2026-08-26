@@ -1112,20 +1112,31 @@ def test_prd_limit_uses_pred_open_not_quote() -> None:
     assert fake.last_request is not None
     assert fake.last_request["action"] == "PENDING"
     assert fake.last_request["type"] == "BUY_LIMIT"
-    assert fake.last_request["price"] == 140_010.0
-    assert fake.last_request["sl"] == 139_910.0
-    assert fake.last_request["tp"] == 140_210.0
+    from trader.execution import planned_limit_entry as _plan
+
+    want = _plan(140_010.0, 140_000.0, 5.0, side=Side.BUY, delay_points=15.0)
+    assert want == 140_025.0
+    assert fake.last_request["price"] == want
+    assert fake.last_request["sl"] == want - 100.0
+    assert fake.last_request["tp"] == want + 200.0
     assert engine.pending is not None
     assert engine.position is None
     assert fake.deals == 0
 
 
 def test_limit_fill_price_matches_study_and_live() -> None:
-    from trader.execution import limit_fill_price, planned_limit_entry
+    from trader.execution import delay_band_points, limit_fill_price, planned_limit_entry
 
     assert planned_limit_entry(140_012.0, 140_000.0, 5.0) == 140_010.0
     assert limit_fill_price(Side.BUY, 140_000.0, 140_010.0, 140_040.0, 140_005.0) is None
     assert limit_fill_price(Side.BUY, 140_000.0, 139_990.0, 140_040.0, 139_980.0) == 139_990.0
     assert limit_fill_price(Side.SELL, 140_000.0, 140_010.0, 140_020.0, 139_990.0) == 140_010.0
     assert limit_fill_price(Side.SELL, 140_000.0, 139_980.0, 139_995.0, 139_960.0) is None
+    # 15 pts = R$3 on one mini; buy pays up, sell sells down.
+    assert delay_band_points(5.0, 15.0) == 15.0
+    assert delay_band_points(5.0, 15.0) * 0.2 == 3.0
+    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.BUY, delay_points=15.0) == 177_645.0
+    assert planned_limit_entry(177_629.0, 177_600.0, 5.0, side=Side.SELL, delay_points=15.0) == 177_615.0
+    cfg = load_named_config("best_candles_m5_1000_a")
+    assert float(cfg.execution.entry_delay_points) == 15.0
 

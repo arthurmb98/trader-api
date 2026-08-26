@@ -41,6 +41,7 @@ execution:
   direction: follow
   entry_mode: market_open
   entry_offset_points: 0.0
+  entry_delay_points: 15.0
   decision: ml_guard
 mt5:
   enabled: false

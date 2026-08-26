@@ -87,6 +87,7 @@ class ExecutionConfig:
     direction: str = "follow"
     entry_mode: str = "market_open"
     entry_offset_points: float = 0.0
+    entry_delay_points: float = 0.0
     decision: str = "ml"
 
 

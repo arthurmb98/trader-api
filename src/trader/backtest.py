@@ -268,7 +268,14 @@ class BacktestEngine:
                     continue
                 entry = filled_px
             else:
-                entry = planned_limit_entry(float(pred_open), float(prev_close), tick)
+                delay_points = float(getattr(exe, "entry_delay_points", 0.0) or 0.0)
+                entry = planned_limit_entry(
+                    float(pred_open),
+                    float(prev_close),
+                    tick,
+                    side=side,
+                    delay_points=delay_points,
+                )
                 filled_px = limit_fill_price(side, entry, o, h, l)
                 if filled_px is None:
                     continue
