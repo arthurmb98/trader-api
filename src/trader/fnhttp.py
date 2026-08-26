@@ -28,3 +28,8 @@ class JsonHandler(BaseHTTPRequestHandler):
     def query(self) -> dict[str, str]:
         parsed = urlparse(self.path)
         return {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
+
+    def op(self) -> str:
+        from trader.http_dispatch import op_from_request
+
+        return op_from_request(self.path, self.query())

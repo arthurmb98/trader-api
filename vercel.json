@@ -4,23 +4,25 @@
   "installCommand": "npm --prefix web install",
   "buildCommand": "npm --prefix web run build",
   "outputDirectory": "web/dist",
-    "functions": {
-      "api/live/**/*.py": {
-        "maxDuration": 60,
-        "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
-      },
-      "api/realtime/**/*.py": {
-        "maxDuration": 60,
-        "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
-      }
+  "functions": {
+    "api/live.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
     },
-    "rewrites": [
-      { "source": "/favicon.ico", "destination": "/brand/logo-branco.png" },
-      { "source": "/live", "destination": "/index.html" },
-      { "source": "/live/", "destination": "/index.html" },
-      { "source": "/replay", "destination": "/index.html" },
-      { "source": "/replay/", "destination": "/index.html" },
-      { "source": "/ao-vivo", "destination": "/index.html" },
-      { "source": "/ao-vivo/", "destination": "/index.html" }
-    ]
+    "api/realtime.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
+    }
+  },
+  "rewrites": [
+    { "source": "/favicon.ico", "destination": "/brand/logo-branco.png" },
+    { "source": "/api/realtime/:op", "destination": "/api/realtime?op=:op" },
+    { "source": "/api/live/:op", "destination": "/api/live?op=:op" },
+    { "source": "/live", "destination": "/index.html" },
+    { "source": "/live/", "destination": "/index.html" },
+    { "source": "/replay", "destination": "/index.html" },
+    { "source": "/replay/", "destination": "/index.html" },
+    { "source": "/ao-vivo", "destination": "/index.html" },
+    { "source": "/ao-vivo/", "destination": "/index.html" }
+  ]
 }
