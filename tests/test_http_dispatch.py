@@ -27,6 +27,7 @@ def test_dispatch_realtime_start_stop_reset() -> None:
         assert status == 200
         assert armed["running"] is True
         assert armed["order_mode"] == "paper"
+        assert armed["n_trades"] == 0
         status, paused = dispatch_realtime("POST", "stop")
         assert status == 200
         assert paused["running"] is False

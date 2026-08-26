@@ -82,15 +82,36 @@ def cloud_state_path() -> Path:
     return Path("/tmp/trader_ao_vivo.json")
 
 
+def _naive_dt(raw: Any) -> datetime | None:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        try:
+            value = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            return None
+    if getattr(value, "tzinfo", None) is not None:
+        value = value.replace(tzinfo=None)
+    return value
+
+
+def _bar_closes_after(ts: datetime, cutoff: datetime) -> bool:
+    """True when the M5 that *opened* at ts closes after cutoff (no backfill)."""
+    return ts + timedelta(minutes=BAR_MINUTES) > cutoff
+
+
 def _load_cloud_state() -> dict[str, Any]:
     path = cloud_state_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        return {"armed": False, "paused_at": None}
+        return {"armed": False, "paused_at": None, "armed_at": None}
     return {
         "armed": bool(raw.get("armed")),
         "paused_at": raw.get("paused_at"),
+        "armed_at": raw.get("armed_at"),
     }
 
 
@@ -185,6 +206,7 @@ class RealtimeEngine:
         self.last_tick: str | None = None
         self.last_bar_time: str | None = None
         self.processed_bar: str | None = None
+        self.armed_at: datetime | None = None
         self.bank = DEFAULT_BANK
         self.initial_bank = DEFAULT_BANK
         self.lot = LOT_SCALED
@@ -372,6 +394,7 @@ class RealtimeEngine:
             "running": self.running,
             "armed": self.running,
             "processed_bar": self.processed_bar,
+            "armed_at": self.armed_at.isoformat(timespec="seconds") if self.armed_at else None,
             "last_bar_time": self.last_bar_time,
             "bank": self.bank,
             "initial_bank": self.initial_bank,
@@ -408,6 +431,7 @@ class RealtimeEngine:
         else:
             self.source = "mt5"
         self.processed_bar = raw.get("processed_bar")
+        self.armed_at = _naive_dt(raw.get("armed_at"))
         self.last_bar_time = raw.get("last_bar_time")
         self.bank = float(raw.get("bank") or DEFAULT_BANK)
         self.initial_bank = float(raw.get("initial_bank") or DEFAULT_BANK)
@@ -825,7 +849,8 @@ class RealtimeEngine:
         if self.position is not None:
             self._manage_open(None, last, ts, now)
         new_bar = self.last_bar_time != self.processed_bar
-        if new_bar and self._can_enter(now, live_mt5=False) and live_bar:
+        tradable = self.armed_at is None or _bar_closes_after(ts, self.armed_at)
+        if new_bar and tradable and self._can_enter(now, live_mt5=False) and live_bar:
             sig = self._policy.from_candles(self._frame)
             self.last_signal = sig
             self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
@@ -877,10 +902,13 @@ class RealtimeEngine:
                 self.error = str(exc)
         if self.running and self._task and not self._task.done():
             return self.snapshot()
+        if self.armed_at is None:
+            self.armed_at = session_now()
         self.running = True
         self.done = False
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(self.run_loop())
+        self._persist()
         return self.snapshot()
 
     async def start(self, source: str | None = None, order_mode: str | None = None) -> dict[str, Any]:
@@ -901,6 +929,7 @@ class RealtimeEngine:
         self.done = False
         self.error = None
         self.processed_bar = None
+        self.armed_at = None
         self.last_bar_time = None
         self.position = None
         self.last_signal = None
@@ -917,10 +946,12 @@ class RealtimeEngine:
         self._frame = None
         self.cursor = 0
 
-    def replay_today(self, now: datetime) -> None:
-        """Walk today's closed stream bars in order (serverless-safe, no background loop)."""
+    def replay_today(self, now: datetime, armed_at: datetime | None = None) -> None:
+        """Walk today's closed stream bars; only trade bars that closed after arm."""
+        arm_from = _naive_dt(armed_at)
         self.set_order_mode("paper")
         self._clear_books()
+        self.armed_at = arm_from
         self.day_key = now.date()
         self.last_tick = now.isoformat(timespec="seconds")
         if self._policy is None or self._session is None:
@@ -969,7 +1000,8 @@ class RealtimeEngine:
             if self.position is not None:
                 self._manage_open(None, last, ts, ts)
             new_bar = self.last_bar_time != self.processed_bar
-            if new_bar and self._can_enter(ts, live_mt5=False):
+            tradable = arm_from is not None and _bar_closes_after(ts, arm_from)
+            if new_bar and tradable and self._can_enter(ts, live_mt5=False):
                 sig = self._policy.from_candles(self._frame)
                 self.last_signal = sig
                 self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
@@ -1057,31 +1089,33 @@ def cloud_snapshot(*, arm: bool | None = None, pause: bool = False, reset: bool 
     now = session_now()
     state = _load_cloud_state()
     if reset:
-        _save_cloud_state({"armed": False, "paused_at": None})
+        _save_cloud_state({"armed": False, "paused_at": None, "armed_at": None})
         snap = _cloud_idle_snapshot(now)
         snap["running"] = False
         return snap
     if pause:
-        state = {"armed": False, "paused_at": now.isoformat(timespec="seconds")}
+        state = {
+            "armed": False,
+            "paused_at": now.isoformat(timespec="seconds"),
+            "armed_at": state.get("armed_at"),
+        }
         _save_cloud_state(state)
     if arm:
-        state = {"armed": True, "paused_at": None}
+        armed_at = state.get("armed_at") or now.isoformat(timespec="seconds")
+        state = {"armed": True, "paused_at": None, "armed_at": armed_at}
         _save_cloud_state(state)
     else:
         state = _load_cloud_state()
     until = now
     paused_at = state.get("paused_at")
     if not state.get("armed") and paused_at:
-        try:
-            until = datetime.fromisoformat(str(paused_at))
-        except ValueError:
-            until = now
+        until = _naive_dt(paused_at) or now
     if not state.get("armed") and not paused_at:
         snap = _cloud_idle_snapshot(now)
         snap["running"] = False
         return snap
     engine = RealtimeEngine()
-    engine.replay_today(until)
+    engine.replay_today(until, armed_at=_naive_dt(state.get("armed_at")))
     engine.running = bool(state.get("armed"))
     engine.last_tick = now.isoformat(timespec="seconds")
     return engine.snapshot()

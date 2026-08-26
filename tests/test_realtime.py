@@ -404,11 +404,94 @@ def test_cloud_snapshot_arms_without_background_loop() -> None:
         armed = cloud_snapshot(arm=True)
         assert armed["running"] is True
         assert armed["order_mode"] == "paper"
+        assert armed["n_trades"] == 0
+        assert armed["bank"] == 1000
         paused = cloud_snapshot(pause=True)
         assert paused["running"] is False
         cleared = cloud_snapshot(reset=True)
         assert cleared["running"] is False
         assert cleared["n_trades"] == 0
+    finally:
+        os.environ.pop("WIN_CLOUD_STATE", None)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_tick_skips_already_closed_bar_after_arm() -> None:
+    import pandas as pd
+
+    engine = RealtimeEngine()
+    engine.set_source("stream")
+    rows = []
+    price = 140_000.0
+    start = datetime(2026, 8, 24, 8, 0)
+    last = datetime(2026, 8, 24, 9, 15)
+    i = 0
+    while True:
+        ts = start + pd.Timedelta(minutes=5 * i)
+        if ts > last:
+            break
+        rows.append(
+            {
+                "t": ts.isoformat(),
+                "open": price,
+                "high": price + 40,
+                "low": price - 20,
+                "close": price + 15,
+            }
+        )
+        price += 10
+        i += 1
+    engine.ingest_candles({"symbol": "WINV26", "candles": rows})
+    engine._prepare_policy()
+    engine.armed_at = datetime(2026, 8, 24, 9, 20)
+    engine.tick(now=datetime(2026, 8, 24, 9, 20))
+    assert engine.trades == []
+    assert engine.position is None
+    assert engine.bank == 1000
+    assert engine.processed_bar == "2026-08-24T09:15:00"
+
+
+def test_replay_today_does_not_backfill_before_arm() -> None:
+    lunch = RealtimeEngine()
+    lunch.replay_today(datetime(2026, 8, 24, 13, 39), armed_at=datetime(2026, 8, 24, 13, 39))
+    assert lunch.trades == []
+    assert lunch.position is None
+    assert lunch.bank == lunch.initial_bank == 1000
+
+    later = RealtimeEngine()
+    later.replay_today(datetime(2026, 8, 24, 16, 0), armed_at=datetime(2026, 8, 24, 13, 39))
+    assert all(str(t.get("entry_time") or "") >= "2026-08-24T13:39:00" for t in later.trades)
+    assert all(not str(t.get("entry_time") or "").startswith("2026-08-24T09:") for t in later.trades)
+    assert all(not str(t.get("entry_time") or "").startswith("2026-08-24T10:") for t in later.trades)
+
+
+def test_replay_today_allows_bars_that_close_after_arm() -> None:
+    engine = RealtimeEngine()
+    engine.replay_today(datetime(2026, 8, 24, 10, 10), armed_at=datetime(2026, 8, 24, 10, 0))
+    assert all(str(t.get("entry_time") or "") >= "2026-08-24T10:00:00" for t in engine.trades)
+    assert all(not str(t.get("entry_time") or "").startswith("2026-08-24T09:") for t in engine.trades)
+
+
+def test_cloud_snapshot_keeps_armed_at_on_poll() -> None:
+    import json
+    from pathlib import Path
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        path = handle.name
+    os.environ["WIN_CLOUD_STATE"] = path
+    try:
+        armed = cloud_snapshot(arm=True)
+        assert armed["n_trades"] == 0
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert raw["armed"] is True
+        first = raw.get("armed_at")
+        assert first
+        cloud_snapshot()
+        again = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert again.get("armed_at") == first
     finally:
         os.environ.pop("WIN_CLOUD_STATE", None)
         try:
