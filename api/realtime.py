@@ -12,9 +12,9 @@ from trader.http_dispatch import dispatch_realtime  # noqa: E402
 
 class handler(JsonHandler):
     def do_GET(self) -> None:
-        status, payload = dispatch_realtime("GET", self.op())
+        status, payload = dispatch_realtime("GET", self.op(), query=self.query())
         self.send_json(status, payload)
 
     def do_POST(self) -> None:
-        status, payload = dispatch_realtime("POST", self.op(), self.read_json())
+        status, payload = dispatch_realtime("POST", self.op(), self.read_json(), self.query())
         self.send_json(status, payload)

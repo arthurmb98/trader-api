@@ -51,6 +51,7 @@ class OrderRequest(BaseModel):
 class RealtimeStart(BaseModel):
     source: str | None = None
     order_mode: str | None = None
+    armed_at: str | None = None
 
 
 class StreamCandleIn(BaseModel):
@@ -138,6 +139,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def disable_api_cache(request: Request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return response
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -335,10 +343,14 @@ def create_app() -> FastAPI:
 
     @app.post("/api/realtime/start")
     async def realtime_start(body: RealtimeStart | None = None) -> dict[str, Any]:
-        from trader.realtime import get_realtime_engine
+        from trader.realtime import _naive_dt, get_realtime_engine
 
         try:
-            return await get_realtime_engine().start(source="stream", order_mode="paper")
+            engine = get_realtime_engine()
+            hint = _naive_dt(body.armed_at) if body else None
+            if hint is not None and not (engine.running and engine._task and not engine._task.done()):
+                engine.armed_at = hint
+            return await engine.start(source="stream", order_mode="paper")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 

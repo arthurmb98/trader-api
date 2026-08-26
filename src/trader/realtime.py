@@ -170,6 +170,7 @@ def empty_realtime_snapshot() -> dict[str, Any]:
         "signals": [],
         "candles": [],
         "wait_reason": "mercado_fechado",
+        "armed_at": None,
         "next_gold": next_gold_window(),
         "playbook": None,
         "mode": "paper",
@@ -311,6 +312,7 @@ class RealtimeEngine:
             "signals": list(reversed(self.signals[-40:])),
             "candles": self.candles_tail if live_last else [],
             "wait_reason": self.wait_reason,
+            "armed_at": self.armed_at.isoformat(timespec="seconds") if self.armed_at else None,
             "next_gold": next_gold_window(),
             "playbook": DEMO_PLAYBOOK if self.order_mode == "mt5" and self.wait_reason == "aguardando_login" else None,
             "mode": self.order_mode,
@@ -919,6 +921,7 @@ class RealtimeEngine:
 
     def stop(self) -> None:
         self.running = False
+        self.armed_at = None
         task = self._task
         self._task = None
         if task and not task.done():
@@ -1084,28 +1087,46 @@ def _cloud_idle_snapshot(now: datetime) -> dict[str, Any]:
     return engine.snapshot()
 
 
-def cloud_snapshot(*, arm: bool | None = None, pause: bool = False, reset: bool = False) -> dict[str, Any]:
+def cloud_snapshot(
+    *,
+    arm: bool | None = None,
+    pause: bool = False,
+    reset: bool = False,
+    client_armed_at: str | None = None,
+) -> dict[str, Any]:
     """Paper ao vivo for Vercel: replay today's clock feed on each request."""
     now = session_now()
+    hint = _naive_dt(client_armed_at)
     state = _load_cloud_state()
     if reset:
         _save_cloud_state({"armed": False, "paused_at": None, "armed_at": None})
         snap = _cloud_idle_snapshot(now)
         snap["running"] = False
+        snap["armed_at"] = None
         return snap
     if pause:
         state = {
             "armed": False,
             "paused_at": now.isoformat(timespec="seconds"),
-            "armed_at": state.get("armed_at"),
+            "armed_at": None,
         }
         _save_cloud_state(state)
-    if arm:
-        armed_at = state.get("armed_at") or now.isoformat(timespec="seconds")
+    elif arm:
+        if state.get("paused_at") or not state.get("armed_at"):
+            armed_at = hint.isoformat(timespec="seconds") if hint else now.isoformat(timespec="seconds")
+        else:
+            armed_at = str(state.get("armed_at"))
         state = {"armed": True, "paused_at": None, "armed_at": armed_at}
         _save_cloud_state(state)
     else:
         state = _load_cloud_state()
+        if hint and not state.get("armed") and not state.get("paused_at"):
+            state = {
+                "armed": True,
+                "paused_at": None,
+                "armed_at": hint.isoformat(timespec="seconds"),
+            }
+            _save_cloud_state(state)
     until = now
     paused_at = state.get("paused_at")
     if not state.get("armed") and paused_at:

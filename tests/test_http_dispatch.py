@@ -28,6 +28,7 @@ def test_dispatch_realtime_start_stop_reset() -> None:
         assert armed["running"] is True
         assert armed["order_mode"] == "paper"
         assert armed["n_trades"] == 0
+        assert armed["armed_at"]
         status, paused = dispatch_realtime("POST", "stop")
         assert status == 200
         assert paused["running"] is False
@@ -36,6 +37,31 @@ def test_dispatch_realtime_start_stop_reset() -> None:
         assert cleared["n_trades"] == 0
         status, missing = dispatch_realtime("GET", "nope")
         assert status == 404
+    finally:
+        os.environ.pop("WIN_CLOUD_STATE", None)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_dispatch_get_restores_armed_from_query() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        path = handle.name
+    os.environ["WIN_CLOUD_STATE"] = path
+    try:
+        status, armed = dispatch_realtime("POST", "start")
+        assert status == 200
+        stamp = armed["armed_at"]
+        os.unlink(path)
+        status, lost = dispatch_realtime("GET", "")
+        assert status == 200
+        assert lost["running"] is False
+        status, restored = dispatch_realtime("GET", "", query={"armed_at": stamp})
+        assert status == 200
+        assert restored["running"] is True
+        assert restored["armed_at"] == stamp
+        assert restored["n_trades"] == 0
     finally:
         os.environ.pop("WIN_CLOUD_STATE", None)
         try:

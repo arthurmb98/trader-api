@@ -102,6 +102,7 @@ export type LiveSnap = {
   candles: { t: string; close: number; open: number; high: number; low: number }[]
   periods?: PeriodStats
   wait_reason?: string
+  armed_at?: string | null
   next_gold?: string | null
   playbook?: string | null
   mode?: 'paper' | 'mt5' | string

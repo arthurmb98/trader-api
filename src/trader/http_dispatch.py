@@ -18,18 +18,32 @@ def op_from_request(path: str, query: dict[str, str] | None = None) -> str:
     return ""
 
 
-def dispatch_realtime(method: str, op: str, _body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+def _armed_hint(body: dict[str, Any] | None, query: dict[str, str] | None) -> str | None:
+    payload = body or {}
+    qs = query or {}
+    raw = payload.get("armed_at") if payload.get("armed_at") not in {None, ""} else qs.get("armed_at")
+    text = str(raw or "").strip()
+    return text or None
+
+
+def dispatch_realtime(
+    method: str,
+    op: str,
+    body: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+) -> tuple[int, dict[str, Any]]:
     from trader.realtime import cloud_feeds, cloud_snapshot
 
     verb = method.upper()
     key = (op or "").strip().lower()
+    hint = _armed_hint(body, query)
     try:
         if verb == "GET" and key in {"", "status"}:
-            return 200, cloud_snapshot()
+            return 200, cloud_snapshot(client_armed_at=hint)
         if verb == "GET" and key == "feeds":
             return 200, cloud_feeds()
         if verb == "POST" and key in {"", "start", "source", "candles"}:
-            return 200, cloud_snapshot(arm=True)
+            return 200, cloud_snapshot(arm=True, client_armed_at=hint)
         if verb == "POST" and key == "stop":
             return 200, cloud_snapshot(pause=True)
         if verb == "POST" and key == "reset":

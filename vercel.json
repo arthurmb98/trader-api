@@ -24,5 +24,11 @@
     { "source": "/replay/", "destination": "/index.html" },
     { "source": "/ao-vivo", "destination": "/index.html" },
     { "source": "/ao-vivo/", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" }]
+    }
   ]
 }

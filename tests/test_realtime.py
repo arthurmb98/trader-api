@@ -499,3 +499,27 @@ def test_cloud_snapshot_keeps_armed_at_on_poll() -> None:
         except OSError:
             pass
 
+
+def test_cloud_arm_survives_lost_tmp_via_client_hint() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        path = handle.name
+    os.environ["WIN_CLOUD_STATE"] = path
+    try:
+        armed = cloud_snapshot(arm=True)
+        assert armed["running"] is True
+        stamp = armed["armed_at"]
+        assert stamp
+        os.unlink(path)
+        lost = cloud_snapshot()
+        assert lost["running"] is False
+        restored = cloud_snapshot(client_armed_at=stamp)
+        assert restored["running"] is True
+        assert restored["armed_at"] == stamp
+        assert restored["n_trades"] == 0
+    finally:
+        os.environ.pop("WIN_CLOUD_STATE", None)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
