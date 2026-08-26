@@ -62,6 +62,9 @@ class RiskConfig:
     trailing_enabled: bool = False
     trailing_trigger_points: float = 80.0
     trailing_distance_points: float = 50.0
+    be_trigger_points: float = 25.0
+    be_lock_points: float = 10.0
+    invalidate_tp_points: float = 30.0
     daily_loss_points: float = 400.0
     max_trades_per_day: int = 8
 

@@ -331,13 +331,14 @@ class Mt5Broker(Broker):
         }
         return mapping.get(self.filling, mt5.ORDER_FILLING_IOC)
 
-    def _deal_request(self, signal: Signal, volume: float) -> dict[str, Any]:
+    def _pending_filling_const(self) -> int:
         mt5 = self._require()
-        tick = mt5.symbol_info_tick(self.symbol)
-        if tick is None:
-            raise RuntimeError("Sem tick do símbolo.")
+        return int(getattr(mt5, "ORDER_FILLING_RETURN", 2))
+
+    def _pending_request(self, signal: Signal, volume: float) -> dict[str, Any]:
+        mt5 = self._require()
         is_buy = signal.side is Side.BUY
-        price = float(tick.ask if is_buy else tick.bid)
+        price = float(signal.entry)
         stop = float(signal.stop) if signal.stop else 0.0
         take = float(signal.take) if signal.take else 0.0
         if stop <= 0 or take <= 0:
@@ -345,31 +346,30 @@ class Mt5Broker(Broker):
             stop = price - dist if is_buy else price + dist
             take = price + 200.0 if is_buy else price - 200.0
         return {
-            "action": mt5.TRADE_ACTION_DEAL,
+            "action": mt5.TRADE_ACTION_PENDING,
             "symbol": self.symbol,
             "volume": float(volume),
-            "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+            "type": mt5.ORDER_TYPE_BUY_LIMIT if is_buy else mt5.ORDER_TYPE_SELL_LIMIT,
             "price": price,
             "sl": float(stop),
             "tp": float(take),
-            "deviation": int(self.deviation),
             "magic": int(self.magic),
-            "comment": self.comment,
+            "comment": f"{self.comment} limit",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": self._filling_const(),
+            "type_filling": self._pending_filling_const(),
         }
 
     def check_order(self, signal: Signal, volume: float, skip_levels: bool = False) -> dict[str, Any]:
         del skip_levels
         mt5 = self._require()
-        request = self._deal_request(signal, volume)
+        request = self._pending_request(signal, volume)
         check = mt5.order_check(request)
         if check is None:
             return {"ok": False, "error": str(mt5.last_error()), "request": _safe_request(request)}
         packed = check._asdict() if hasattr(check, "_asdict") else {"retcode": getattr(check, "retcode", None)}
         retcode = packed.get("retcode")
         return {
-            "ok": retcode in {0, mt5.TRADE_RETCODE_DONE} or int(retcode or -1) == 0,
+            "ok": retcode in {0, mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED} or int(retcode or -1) in {0, 10008, 10009},
             "retcode": retcode,
             "comment": packed.get("comment"),
             "request": _safe_request(request),
@@ -377,7 +377,7 @@ class Mt5Broker(Broker):
 
     def send(self, signal: Signal, volume: float) -> dict[str, Any]:
         mt5 = self._require()
-        request = self._deal_request(signal, volume)
+        request = self._pending_request(signal, volume)
         check = mt5.order_check(request)
         result = mt5.order_send(request)
         if result is None:
@@ -386,6 +386,49 @@ class Mt5Broker(Broker):
         payload["check"] = None if check is None else str(check)
         payload["request"] = _safe_request(request)
         return payload
+
+    def open_orders(self) -> list[dict[str, Any]]:
+        mt5 = self._require()
+        rows = mt5.orders_get(symbol=self.symbol)
+        if not rows:
+            return []
+        buy_limit = int(mt5.ORDER_TYPE_BUY_LIMIT)
+        sell_limit = int(mt5.ORDER_TYPE_SELL_LIMIT)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if int(row.magic) != int(self.magic):
+                continue
+            kind = int(row.type)
+            if kind == buy_limit:
+                side = Side.BUY
+            elif kind == sell_limit:
+                side = Side.SELL
+            else:
+                continue
+            out.append(
+                {
+                    "ticket": int(row.ticket),
+                    "side": side,
+                    "entry": float(row.price_open),
+                    "stop": float(getattr(row, "sl", 0) or 0),
+                    "take": float(getattr(row, "tp", 0) or 0),
+                    "volume": float(row.volume_current or row.volume_initial),
+                    "time": _mt5_time(row.time_setup),
+                }
+            )
+        return out
+
+    def cancel_order(self, ticket: int) -> dict[str, Any]:
+        mt5 = self._require()
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(ticket),
+            "magic": int(self.magic),
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            raise RuntimeError(f"cancel falhou: {mt5.last_error()}")
+        return result._asdict()
 
     def modify_sltp(self, ticket: int, sl: float, tp: float) -> dict[str, Any]:
         mt5 = self._require()

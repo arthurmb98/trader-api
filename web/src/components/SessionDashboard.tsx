@@ -321,6 +321,24 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
                 </div>
               </dl>
             </div>
+          ) : snap.pending ? (
+            <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-4">
+                <SideMark side={snap.pending.side} />
+                <p className="tabular-nums">
+                  pendente LIMIT @ {snap.pending.entry.toFixed(0)} · stop {snap.pending.stop.toFixed(0)} · alvo{' '}
+                  {snap.pending.take.toFixed(0)}
+                </p>
+                {snap.pending.ticket ? (
+                  <p className="text-xs text-muted-foreground">ticket {snap.pending.ticket}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">paper · sem envio</p>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Espera o mercado no preço previsto. Não persegue o tick atrasado.
+              </p>
+            </div>
           ) : (
             <p className="mt-3 text-muted-foreground">Nenhuma posição aberta.</p>
           )}

@@ -271,6 +271,8 @@ def _position_dict(position: dict | None) -> dict[str, Any] | None:
         "reason": str(position.get("reason") or ""),
         "ticket": position.get("ticket"),
         "entry_bar": position.get("entry_bar"),
+        "orig_stop": position.get("orig_stop"),
+        "orig_take": position.get("orig_take"),
     }
 
 
@@ -290,6 +292,8 @@ def _position_from_dict(data: dict[str, Any] | None) -> dict | None:
         "reason": str(data.get("reason") or ""),
         "ticket": data.get("ticket"),
         "entry_bar": data.get("entry_bar"),
+        "orig_stop": float(data["orig_stop"]) if data.get("orig_stop") is not None else None,
+        "orig_take": float(data["orig_take"]) if data.get("orig_take") is not None else None,
     }
 
 

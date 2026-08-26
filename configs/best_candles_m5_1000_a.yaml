@@ -22,6 +22,9 @@ risk:
   trailing_enabled: true
   trailing_trigger_points: 60.0
   trailing_distance_points: 50.0
+  be_trigger_points: 25.0
+  be_lock_points: 10.0
+  invalidate_tp_points: 30.0
   daily_loss_points: 0.0
   max_trades_per_day: 8
 filters:

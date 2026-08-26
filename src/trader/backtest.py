@@ -7,7 +7,8 @@ import pandas as pd
 
 from trader.config import AppConfig
 from trader.domain import Side, StudyMetrics, Trade
-from trader.risk import RiskCalculator, round_to_tick
+from trader.risk import RiskCalculator, protect_levels, round_to_tick
+from trader.execution import limit_fill_price, planned_limit_entry
 
 
 def _parse_hhmm(value: str) -> time:
@@ -173,6 +174,27 @@ class BacktestEngine:
                 trades_today = 0
 
             if position is not None:
+                invalidate = False
+                open_i = int(position.get("open_i") or i)
+                if i > open_i:
+                    prev_px = closes[i - 1]
+                    pred_px = pred_close_a[i - 1]
+                    strange = bool(use_guard and strange_arr is not None and i - 1 < len(strange_arr) and strange_arr[i - 1])
+                    if strange or np.isnan(pred_px):
+                        invalidate = True
+                    else:
+                        nxt = Side.BUY if pred_px >= prev_px else Side.SELL
+                        if fade:
+                            nxt = nxt.opposite()
+                        if use_pa and pa_arr is not None and i - 1 < len(pa_arr):
+                            pa = int(pa_arr[i - 1])
+                            if pa == 0:
+                                invalidate = True
+                            else:
+                                nxt = Side.BUY if pa > 0 else Side.SELL
+                        if not invalidate:
+                            invalidate = nxt is not position["side"]
+                self._protect_position(position, h, l, invalidate=invalidate)
                 exit_price, reason = self._manage(position, o, h, l, c)
                 if exit_price is None and flatten[i]:
                     exit_price, reason = c, "fim_da_sessao"
@@ -238,18 +260,19 @@ class BacktestEngine:
             if limit_inside:
                 if side is Side.BUY:
                     entry = round_to_tick(pred_high - offset, tick)
-                    filled = l <= entry
-                    if filled:
-                        entry = min(entry, o)
+                    filled_px = limit_fill_price(side, entry, o, h, l)
                 else:
                     entry = round_to_tick(pred_low + offset, tick)
-                    filled = h >= entry
-                    if filled:
-                        entry = max(entry, o)
-                if not filled:
+                    filled_px = limit_fill_price(side, entry, o, h, l)
+                if filled_px is None:
                     continue
+                entry = filled_px
             else:
-                entry = o
+                entry = planned_limit_entry(float(pred_open), float(prev_close), tick)
+                filled_px = limit_fill_price(side, entry, o, h, l)
+                if filled_px is None:
+                    continue
+                entry = filled_px
 
             stop, take = self.risk.levels(side, entry, atr)
             if n_contracts != last_logged_contracts:
@@ -265,8 +288,12 @@ class BacktestEngine:
                 "hour": ts.hour,
                 "extreme": float(entry),
                 "contracts": n_contracts,
+                "open_i": i,
+                "orig_stop": float(stop),
+                "orig_take": float(take),
             }
             trades_today += 1
+            self._protect_position(position, h, l, invalidate=False)
             exit_price, reason = self._manage(position, o, h, l, c)
             if exit_price is not None:
                 trade = self._close(position, ts, exit_price, reason)
@@ -289,6 +316,38 @@ class BacktestEngine:
         metrics.contracts_path = contracts_path
         return metrics
 
+    def _protect_position(self, position: dict, h: float, l: float, *, invalidate: bool) -> None:
+        side: Side = position["side"]
+        buy = side is Side.BUY
+        risk = self.config.risk
+        tick = float(self.config.instrument.tick_size)
+        position.setdefault("orig_stop", float(position["stop"]))
+        position.setdefault("orig_take", float(position["take"]))
+        mark = h if buy else l
+        new_stop, new_take, new_extreme = protect_levels(
+            buy=buy,
+            entry=float(position["entry"]),
+            stop=float(position["stop"]),
+            take=float(position["take"]),
+            orig_stop=float(position["orig_stop"]),
+            orig_take=float(position["orig_take"]),
+            mark=float(mark),
+            extreme=float(position.get("extreme") or position["entry"]),
+            tick=tick,
+            be_trigger=float(risk.be_trigger_points),
+            be_lock=float(risk.be_lock_points),
+            invalidate=invalidate,
+            bar_high=float(h),
+            bar_low=float(l),
+            invalidate_tp=float(risk.invalidate_tp_points),
+            trail_enabled=bool(risk.trailing_enabled),
+            trail_trigger=float(risk.trailing_trigger_points),
+            trail_distance=float(risk.trailing_distance_points),
+        )
+        position["stop"] = new_stop
+        position["take"] = new_take
+        position["extreme"] = new_extreme
+
     def _manage(
         self,
         position: dict,
@@ -298,23 +357,8 @@ class BacktestEngine:
         _c: float,
     ) -> tuple[float | None, str]:
         side: Side = position["side"]
-        stop = position["stop"]
-        take = position["take"]
-        risk = self.config.risk
-        if risk.trailing_enabled:
-            if side is Side.BUY:
-                position["extreme"] = max(position["extreme"], h)
-                if position["extreme"] - position["entry"] >= risk.trailing_trigger_points:
-                    new_stop = position["extreme"] - risk.trailing_distance_points
-                    position["stop"] = max(position["stop"], new_stop)
-                    stop = position["stop"]
-            else:
-                position["extreme"] = min(position["extreme"], l)
-                if position["entry"] - position["extreme"] >= risk.trailing_trigger_points:
-                    new_stop = position["extreme"] + risk.trailing_distance_points
-                    position["stop"] = min(position["stop"], new_stop)
-                    stop = position["stop"]
-
+        stop = float(position["stop"])
+        take = float(position["take"])
         hit_stop = l <= stop if side is Side.BUY else h >= stop
         hit_take = h >= take if side is Side.BUY else l <= take
         if hit_stop and hit_take:

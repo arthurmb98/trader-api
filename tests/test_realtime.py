@@ -22,7 +22,7 @@ from trader.mt5_session import (
 from trader.feeds import StreamFeed, parse_stream_payload
 from trader.realtime import RealtimeEngine
 from trader.replay import load_named_config
-from trader.risk import RiskCalculator
+from trader.risk import RiskCalculator, protect_levels
 
 
 def test_front_contract_rolls_after_august_expiry() -> None:
@@ -186,6 +186,7 @@ def test_stream_is_paper_and_never_sends() -> None:
 
     sig = Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "teste")
     engine._open_paper(sig, 140_000.0, datetime(2026, 8, 24, 9, 15))
+    engine._fill_pending_paper(140_000.0, datetime(2026, 8, 24, 9, 15))
     assert engine.position is not None
     assert engine.lot == "scaled"
     assert engine.position["contracts"] == 1
@@ -201,6 +202,7 @@ def test_stream_is_paper_and_never_sends() -> None:
     assert engine.trades[-1]["points"] == 200.0
     engine.bank = 2000
     engine._open_paper(sig, 140_000.0, datetime(2026, 8, 24, 9, 25))
+    engine._fill_pending_paper(140_000.0, datetime(2026, 8, 24, 9, 25))
     assert engine.position is not None
     assert engine.position["contracts"] == 2
 
@@ -301,6 +303,12 @@ class _FakeWinBroker:
         self._candles: list = []
         self.live: list = []
         self._deal: dict | None = None
+        self.modified: list = []
+        self.quote_override: dict | None = None
+        self.orders: list = []
+        self.cancelled: list = []
+        self.last_request: dict | None = None
+        self.deals = 0
 
     def connect(self, **kwargs):  # noqa: ANN003
         del kwargs
@@ -335,6 +343,8 @@ class _FakeWinBroker:
         return list(self._candles[-max(count, 1) :])
 
     def quote(self) -> dict:
+        if self.quote_override is not None:
+            return self.quote_override
         if not self._candles:
             return {"bid": 140000.0, "ask": 140005.0, "last": 140000.0, "time": None}
         last = self._candles[-1]
@@ -352,15 +362,20 @@ class _FakeWinBroker:
         del ticket
         return self._deal
 
+    def open_orders(self) -> list:
+        return list(self.orders)
+
+    def cancel_order(self, ticket):  # noqa: ANN001
+        self.cancelled.append(int(ticket))
+        self.orders = [row for row in self.orders if int(row["ticket"]) != int(ticket)]
+        return {"retcode": 10009}
+
     def close_position(self, ticket, side, volume):  # noqa: ANN001
         del ticket, side, volume
         self.closed += 1
+        self.deals += 1
         self.live = []
         return {"retcode": 10009, "comment": "trader-api close"}
-
-    def modify_sltp(self, ticket, sl, tp):  # noqa: ANN001
-        del ticket, sl, tp
-        return {"retcode": 10009}
 
     def send(self, signal=None, volume=1.0, *args, **kwargs):  # noqa: ANN002, ANN003
         del args, kwargs
@@ -372,7 +387,15 @@ class _FakeWinBroker:
         stop = float(getattr(signal, "stop", 0) or 0)
         take = float(getattr(signal, "take", 0) or 0)
         side = getattr(signal, "side", Side.BUY)
-        self.live = [
+        kind = "BUY_LIMIT" if side is Side.BUY or str(side) == "BUY" else "SELL_LIMIT"
+        self.last_request = {
+            "action": "PENDING",
+            "type": kind,
+            "price": entry,
+            "sl": stop,
+            "tp": take,
+        }
+        self.orders = [
             {
                 "ticket": 77,
                 "side": side,
@@ -381,10 +404,19 @@ class _FakeWinBroker:
                 "take": take,
                 "volume": float(volume),
                 "time": datetime(2026, 8, 25, 14, 30),
-                "profit": 0.0,
             }
         ]
-        return {"retcode": 10009, "order": 77, "deal": 77, "comment": "ok"}
+        self.live = []
+        return {"retcode": 10008, "order": 77, "comment": "placed"}
+
+    def modify_sltp(self, ticket, sl, tp):  # noqa: ANN001
+        self.modified.append((int(ticket), float(sl), float(tp)))
+        for pos in self.live:
+            if int(pos["ticket"]) == int(ticket):
+                pos["stop"] = float(sl)
+                pos["take"] = float(tp)
+                break
+        return {"retcode": 10009}
 
 
 def _win_candles(start: datetime, n: int = 80):
@@ -511,8 +543,20 @@ def test_real_account_falls_back_to_paper_and_never_sends() -> None:
 
 class _AlwaysBuy:
     def from_candles(self, frame):  # noqa: ANN001
-        del frame
-        return Signal(Side.BUY, 140_000.0, 139_900.0, 140_200.0, "teste_ouro")
+        from trader.domain import PredictedCandle
+
+        last = float(frame.iloc[-1]["Fechamento"])
+        pred = PredictedCandle(open=last, high=last + 40, low=last - 20, close=last + 15)
+        return Signal(Side.BUY, last, last - 100, last + 200, "teste_ouro", pred)
+
+
+class _AlwaysSell:
+    def from_candles(self, frame):  # noqa: ANN001
+        from trader.domain import PredictedCandle
+
+        last = float(frame.iloc[-1]["Fechamento"])
+        pred = PredictedCandle(open=last, high=last + 20, low=last - 40, close=last - 15)
+        return Signal(Side.SELL, last, last + 100, last - 200, "teste_invalida", pred)
 
 
 def test_armed_through_lunch_opens_paper_at_gold() -> None:
@@ -591,8 +635,13 @@ def test_prd_sends_on_real_account_in_gold() -> None:
     assert engine.snapshot()["can_send"] is True
     assert fake.sent == 1
     assert fake.last_volume == 1
-    assert engine.position is not None
-    assert engine.position.get("ticket") == 77
+    assert engine.position is None
+    assert engine.pending is not None
+    assert engine.pending.get("ticket") == 77
+    assert fake.last_request is not None
+    assert fake.last_request["action"] == "PENDING"
+    assert fake.last_request["type"] == "BUY_LIMIT"
+    assert fake.deals == 0
 
 
 def test_enviar_on_real_still_refuses_send() -> None:
@@ -631,8 +680,9 @@ def test_prd_sizes_minis_from_mt5_bank_not_paper() -> None:
     engine.tick(now=datetime(2026, 8, 25, 14, 30))
     assert fake.sent == 1
     assert fake.last_volume == 2
-    assert engine.position is not None
-    assert float(engine.position.get("contracts") or 0) == 2
+    assert engine.position is None
+    assert engine.pending is not None
+    assert float(engine.pending.get("contracts") or 0) == 2
     assert engine.snapshot()["contracts"] == 2
 
 
@@ -713,9 +763,11 @@ def test_prd_keeps_ticket_on_wide_m5_bar() -> None:
     assert fake.closed == 0
     engine.tick(now=datetime(2026, 8, 25, 14, 30, 2))
     assert fake.closed == 0
+    assert fake.deals == 0
     assert engine.trades == []
-    assert engine.position is not None
-    assert engine.position.get("ticket") == 77
+    assert engine.position is None
+    assert engine.pending is not None
+    assert engine.pending.get("ticket") == 77
 
 
 def test_prd_records_mt5_deal_profit_not_theoretical() -> None:
@@ -806,4 +858,274 @@ def test_prd_does_not_send_below_500_bank() -> None:
     assert fake.sent == 0
     assert engine.position is None
     assert engine.snapshot()["contracts"] == 0
+
+
+def _protect(
+    *,
+    buy: bool = True,
+    entry: float = 140_000.0,
+    stop: float | None = None,
+    take: float | None = None,
+    mark: float | None = 140_030.0,
+    extreme: float | None = None,
+    invalidate: bool = False,
+    bar_high: float | None = 140_040.0,
+    bar_low: float | None = 139_980.0,
+    trail: bool = False,
+) -> tuple[float, float, float]:
+    if buy:
+        stop = 139_900.0 if stop is None else stop
+        take = 140_200.0 if take is None else take
+    else:
+        stop = 140_100.0 if stop is None else stop
+        take = 139_800.0 if take is None else take
+    return protect_levels(
+        buy=buy,
+        entry=entry,
+        stop=stop,
+        take=take,
+        orig_stop=stop,
+        orig_take=take,
+        mark=mark,
+        extreme=entry if extreme is None else extreme,
+        tick=5.0,
+        be_trigger=25.0,
+        be_lock=10.0,
+        invalidate=invalidate,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        invalidate_tp=30.0,
+        trail_enabled=trail,
+        trail_trigger=60.0,
+        trail_distance=50.0,
+    )
+
+
+def test_be_locks_small_gain_after_25pts() -> None:
+    stop, take, _ = _protect(mark=140_030.0, invalidate=False)
+    assert stop == 140_010.0
+    assert take == 140_200.0
+
+
+def test_be_does_not_move_before_trigger() -> None:
+    stop, take, _ = _protect(mark=140_010.0, invalidate=False)
+    assert stop == 139_900.0
+    assert take == 140_200.0
+
+
+def test_invalidate_pulls_stop_and_small_take() -> None:
+    stop, take, _ = _protect(mark=140_020.0, invalidate=True, bar_low=139_980.0)
+    assert stop == 140_010.0
+    assert take == 140_030.0
+
+
+def test_invalidate_uses_bar_extreme_when_tighter() -> None:
+    stop, take, _ = _protect(mark=140_050.0, invalidate=True, bar_low=140_025.0)
+    assert stop == 140_025.0
+    assert take == 140_030.0
+
+
+def test_invalidate_does_not_loosen_original_stop() -> None:
+    stop, take, _ = _protect(mark=140_020.0, invalidate=True, bar_low=139_850.0)
+    assert stop == 140_010.0
+    assert take == 140_030.0
+
+
+def test_invalidate_falls_back_to_be_when_mark_is_flat() -> None:
+    stop, take, _ = _protect(mark=140_005.0, invalidate=True, bar_low=139_980.0)
+    assert stop == 140_000.0
+    assert take == 140_030.0
+
+
+def test_sell_be_and_invalidate() -> None:
+    stop, take, _ = _protect(buy=False, mark=139_970.0, invalidate=False)
+    assert stop == 139_990.0
+    assert take == 139_800.0
+    stop, take, _ = _protect(buy=False, mark=139_980.0, invalidate=True, bar_high=140_020.0)
+    assert stop == 139_990.0
+    assert take == 139_970.0
+
+
+def test_same_side_signal_keeps_100_200() -> None:
+    import pandas as pd
+
+    engine = RealtimeEngine()
+    engine._prepare_policy()
+    engine.last_bar_time = "2026-08-25T14:35:00"
+    engine.position = {
+        "side": Side.BUY,
+        "entry": 140_000.0,
+        "stop": 139_900.0,
+        "take": 140_200.0,
+        "orig_stop": 139_900.0,
+        "orig_take": 140_200.0,
+        "time": datetime(2026, 8, 25, 14, 31),
+        "hour": 14,
+        "extreme": 140_000.0,
+        "contracts": 1,
+        "reason": "mt5",
+        "ticket": 77,
+        "entry_bar": "2026-08-25T14:30:00",
+    }
+    fake = _FakeWinBroker()
+    fake.allow_send = True
+    fake.live = [{"ticket": 77, "stop": 139_900.0, "take": 140_200.0, "side": Side.BUY, "entry": 140_000.0, "volume": 1, "time": datetime(2026, 8, 25, 14, 31), "profit": 0.0}]
+    closed = pd.Series({"Máximo": 140_040.0, "Mínimo": 139_980.0})
+    engine._protect_open(fake, 140_010.0, closed, Signal(Side.BUY, 140_010.0, 139_910.0, 140_210.0, "seguir"))  # type: ignore[arg-type]
+    assert float(engine.position["stop"]) == 139_900.0
+    assert float(engine.position["take"]) == 140_200.0
+    assert fake.modified == []
+    assert fake.closed == 0
+    assert fake.sent == 0
+
+
+def test_opposite_m5_tightens_via_modify_not_close() -> None:
+    import pandas as pd
+
+    engine = RealtimeEngine()
+    engine._prepare_policy()
+    engine.last_bar_time = "2026-08-25T14:35:00"
+    engine.position = {
+        "side": Side.BUY,
+        "entry": 140_000.0,
+        "stop": 139_900.0,
+        "take": 140_200.0,
+        "orig_stop": 139_900.0,
+        "orig_take": 140_200.0,
+        "time": datetime(2026, 8, 25, 14, 31),
+        "hour": 14,
+        "extreme": 140_000.0,
+        "contracts": 1,
+        "reason": "mt5",
+        "ticket": 77,
+        "entry_bar": "2026-08-25T14:30:00",
+    }
+    fake = _FakeWinBroker()
+    fake.allow_send = True
+    fake.live = [{"ticket": 77, "stop": 139_900.0, "take": 140_200.0, "side": Side.BUY, "entry": 140_000.0, "volume": 1, "time": datetime(2026, 8, 25, 14, 31), "profit": 0.0}]
+    closed = pd.Series({"Máximo": 140_040.0, "Mínimo": 139_980.0})
+    engine._protect_open(
+        fake,
+        140_020.0,
+        closed,
+        Signal(Side.SELL, 140_020.0, 140_120.0, 139_820.0, "seguir_previsao_proxima_abertura"),
+    )  # type: ignore[arg-type]
+    assert fake.closed == 0
+    assert fake.sent == 0
+    assert engine.position is not None
+    assert engine.position["ticket"] == 77
+    assert float(engine.position["stop"]) == 140_010.0
+    assert float(engine.position["take"]) == 140_030.0
+    assert fake.modified == [(77, 140_010.0, 140_030.0)]
+
+
+def test_mercado_estranho_invalidates_like_opposite() -> None:
+    import pandas as pd
+
+    engine = RealtimeEngine()
+    engine._prepare_policy()
+    engine.last_bar_time = "2026-08-25T14:35:00"
+    engine.position = {
+        "side": Side.BUY,
+        "entry": 140_000.0,
+        "stop": 139_900.0,
+        "take": 140_200.0,
+        "orig_stop": 139_900.0,
+        "orig_take": 140_200.0,
+        "time": datetime(2026, 8, 25, 14, 31),
+        "hour": 14,
+        "extreme": 140_000.0,
+        "contracts": 1,
+        "reason": "mt5",
+        "ticket": 77,
+        "entry_bar": "2026-08-25T14:30:00",
+    }
+    fake = _FakeWinBroker()
+    closed = pd.Series({"Máximo": 140_040.0, "Mínimo": 139_980.0})
+    engine._protect_open(fake, 140_020.0, closed, Signal(Side.FLAT, 0, 0, 0, "mercado_estranho"))  # type: ignore[arg-type]
+    assert fake.closed == 0
+    assert float(engine.position["stop"]) == 140_010.0
+    assert float(engine.position["take"]) == 140_030.0
+
+
+def test_prd_next_m5_sell_does_not_reverse_ticket() -> None:
+    from trader.domain import Candle
+
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    fake._candles = candles
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 1
+    assert engine.pending is not None
+    ticket = engine.pending.get("ticket")
+    last = candles[-1]
+    fake._candles = candles + [
+        Candle(
+            symbol="WINV26",
+            timestamp=last.timestamp + timedelta(minutes=5),
+            open=last.close,
+            high=last.close + 20,
+            low=last.close - 10,
+            close=last.close + 5,
+            volume=10,
+        )
+    ]
+    fake.quote_override = None
+    engine._policy = _AlwaysSell()  # type: ignore[assignment]
+    engine._ticks_mt5 = 3
+    engine.tick(now=datetime(2026, 8, 25, 14, 36))
+    assert fake.sent == 1
+    assert fake.closed == 0
+    assert fake.deals == 0
+    assert ticket in fake.cancelled
+    assert engine.position is None
+    assert engine.pending is None
+
+
+def test_prd_limit_uses_pred_open_not_quote() -> None:
+    from trader.domain import PredictedCandle
+
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    engine._prepare_policy()
+    engine.mt5_info["bank"] = 1000.0
+    engine.mt5_info["demo"] = False
+    fake = _FakeWinBroker()
+    fake.allow_send = True
+    sig = Signal(
+        Side.BUY,
+        140_000.0,
+        139_900.0,
+        140_200.0,
+        "seguir",
+        PredictedCandle(140_010.0, 140_050.0, 139_980.0, 140_030.0),
+    )
+    engine._send_signal(fake, sig, engine._planned_entry(sig))  # type: ignore[arg-type]
+    assert fake.last_request is not None
+    assert fake.last_request["action"] == "PENDING"
+    assert fake.last_request["type"] == "BUY_LIMIT"
+    assert fake.last_request["price"] == 140_010.0
+    assert fake.last_request["sl"] == 139_910.0
+    assert fake.last_request["tp"] == 140_210.0
+    assert engine.pending is not None
+    assert engine.position is None
+    assert fake.deals == 0
+
+
+def test_limit_fill_price_matches_study_and_live() -> None:
+    from trader.execution import limit_fill_price, planned_limit_entry
+
+    assert planned_limit_entry(140_012.0, 140_000.0, 5.0) == 140_010.0
+    assert limit_fill_price(Side.BUY, 140_000.0, 140_010.0, 140_040.0, 140_005.0) is None
+    assert limit_fill_price(Side.BUY, 140_000.0, 139_990.0, 140_040.0, 139_980.0) == 139_990.0
+    assert limit_fill_price(Side.SELL, 140_000.0, 140_010.0, 140_020.0, 139_990.0) == 140_010.0
+    assert limit_fill_price(Side.SELL, 140_000.0, 139_980.0, 139_995.0, 139_960.0) is None
 

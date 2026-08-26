@@ -114,6 +114,7 @@ export type LiveSnap = {
   max_contracts: number
   signal: SignalSnap | null
   position: PositionSnap | null
+  pending?: PositionSnap | null
   trades: TradeSnap[]
   equity: { t: string; bank: number }[]
   daily: { t: string; pnl: number }[]
@@ -184,6 +185,7 @@ export const EMPTY_SNAP: LiveSnap = {
   max_contracts: 1,
   signal: null,
   position: null,
+  pending: null,
   trades: [],
   equity: [],
   daily: [],
