@@ -206,7 +206,7 @@ export function SessionDashboard({ snap, emptyHint }: { snap: LiveSnap; emptyHin
           value={snap.order_mode === 'prd' ? `${snap.contracts} mini` : brl(snap.bank)}
           hint={
             snap.order_mode === 'prd'
-              ? `${snap.contracts} mini · banca MT5 ${brl(Number(snap.mt5?.bank ?? snap.mt5?.equity ?? snap.mt5?.balance ?? 0))} · teto ${snap.max_contracts}`
+              ? `${snap.contracts} mini · banca MT5 ${brl(Number(snap.mt5?.bank ?? snap.mt5?.equity ?? snap.mt5?.balance ?? 0))} · piso R$ 500 · teto ${snap.max_contracts}`
               : asLot(snap.lot) === 'scaled'
                 ? `${brl(snap.initial_bank)} inicial · ${snap.contracts} mini agora · teto ${snap.max_contracts}`
                 : `${brl(snap.initial_bank)} inicial · sempre 1 mini`

@@ -293,11 +293,14 @@ class _FakeWinBroker:
 
     def __init__(self) -> None:
         self.sent = 0
+        self.closed = 0
         self.last_volume = 0.0
         self.demo = True
         self.allow_send = False
         self.bank = 1000.0
         self._candles: list = []
+        self.live: list = []
+        self._deal: dict | None = None
 
     def connect(self, **kwargs):  # noqa: ANN003
         del kwargs
@@ -343,14 +346,44 @@ class _FakeWinBroker:
         }
 
     def open_positions(self) -> list:
-        return []
+        return list(self.live)
+
+    def closing_deal(self, ticket: int) -> dict | None:
+        del ticket
+        return self._deal
+
+    def close_position(self, ticket, side, volume):  # noqa: ANN001
+        del ticket, side, volume
+        self.closed += 1
+        self.live = []
+        return {"retcode": 10009, "comment": "trader-api close"}
+
+    def modify_sltp(self, ticket, sl, tp):  # noqa: ANN001
+        del ticket, sl, tp
+        return {"retcode": 10009}
 
     def send(self, signal=None, volume=1.0, *args, **kwargs):  # noqa: ANN002, ANN003
-        del signal, args, kwargs
+        del args, kwargs
         self.sent += 1
         self.last_volume = float(volume)
         if not self.allow_send:
             raise AssertionError("order_send nao pode rodar no paper")
+        entry = float(getattr(signal, "entry", 140000.0) or 140000.0)
+        stop = float(getattr(signal, "stop", 0) or 0)
+        take = float(getattr(signal, "take", 0) or 0)
+        side = getattr(signal, "side", Side.BUY)
+        self.live = [
+            {
+                "ticket": 77,
+                "side": side,
+                "entry": entry,
+                "stop": stop,
+                "take": take,
+                "volume": float(volume),
+                "time": datetime(2026, 8, 25, 14, 30),
+                "profit": 0.0,
+            }
+        ]
         return {"retcode": 10009, "order": 77, "deal": 77, "comment": "ok"}
 
 
@@ -657,4 +690,120 @@ def test_mt5_deposit_does_not_change_daily_average() -> None:
     assert after["today_pnl"] == before["today_pnl"]
     assert after["contracts"] == 2
     assert after["n_trades"] == 1
+
+
+def test_prd_keeps_ticket_on_wide_m5_bar() -> None:
+    from dataclasses import replace
+
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    last = candles[-1]
+    candles[-1] = replace(last, high=last.open + 400, low=last.open - 400)
+    fake._candles = candles
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 1
+    assert fake.closed == 0
+    engine.tick(now=datetime(2026, 8, 25, 14, 30, 2))
+    assert fake.closed == 0
+    assert engine.trades == []
+    assert engine.position is not None
+    assert engine.position.get("ticket") == 77
+
+
+def test_prd_records_mt5_deal_profit_not_theoretical() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    engine._prepare_policy()
+    engine.position = {
+        "side": Side.BUY,
+        "entry": 177915.0,
+        "stop": 177815.0,
+        "take": 178115.0,
+        "time": datetime(2026, 8, 26, 14, 30, 1),
+        "hour": 14,
+        "extreme": 177915.0,
+        "contracts": 1,
+        "reason": "mt5",
+        "ticket": 390319182,
+    }
+    fake = _FakeWinBroker()
+    fake.live = []
+    fake._deal = {
+        "price": 177910.0,
+        "time": datetime(2026, 8, 26, 14, 30, 3),
+        "profit": -1.0,
+    }
+    engine._sync_position(fake, datetime(2026, 8, 26, 14, 30, 3))  # type: ignore[arg-type]
+    assert engine.position is None
+    trade = engine.trades[-1]
+    assert trade["pnl"] == -1.0
+    assert trade["result"] == "loss"
+    assert trade["exit"] == 177910.0
+
+    engine.position = {
+        "side": Side.SELL,
+        "entry": 177760.0,
+        "stop": 177860.0,
+        "take": 177560.0,
+        "time": datetime(2026, 8, 26, 14, 35, 1),
+        "hour": 14,
+        "extreme": 177760.0,
+        "contracts": 1,
+        "reason": "mt5",
+        "ticket": 390319532,
+    }
+    fake._deal = {
+        "price": 177765.0,
+        "time": datetime(2026, 8, 26, 14, 35, 3),
+        "profit": -1.0,
+    }
+    engine._sync_position(fake, datetime(2026, 8, 26, 14, 35, 3))  # type: ignore[arg-type]
+    assert engine.trades[-1]["pnl"] == -1.0
+    assert engine.trades[-1]["result"] == "loss"
+    assert engine.trades[-1]["exit"] == 177765.0
+    assert engine.trades[-1]["pnl"] != 5.0
+
+
+def test_prd_sends_one_mini_from_500_bank() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    fake.bank = 500.0
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 1
+    assert fake.last_volume == 1
+    assert engine.snapshot()["contracts"] == 1
+
+
+def test_prd_does_not_send_below_500_bank() -> None:
+    engine = RealtimeEngine()
+    engine.set_order_mode("prd")
+    fake = _FakeWinBroker()
+    fake.demo = False
+    fake.allow_send = True
+    fake.bank = 499.0
+    fake._candles = _win_candles(datetime(2026, 8, 25, 8, 0), n=78)
+    engine._broker = fake  # type: ignore[assignment]
+    engine._prepare_policy()
+    engine._policy = _AlwaysBuy()  # type: ignore[assignment]
+    engine._enter_now = True
+    engine.tick(now=datetime(2026, 8, 25, 14, 30))
+    assert fake.sent == 0
+    assert engine.position is None
+    assert engine.snapshot()["contracts"] == 0
 

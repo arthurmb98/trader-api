@@ -38,6 +38,7 @@ from trader.risk import RiskCalculator
 SESSION_PATH = RESULTS_DIR / "realtime_session.json"
 CONFIG_NAME = "best_candles_m5_1000_a"
 DEFAULT_BANK = 1000.0
+MIN_LIVE_BANK = 500.0
 ORDER_MODES = {"paper", "mt5", "prd"}
 ORDER_MODE_ALIASES = {
     "prod": "prd",
@@ -538,13 +539,17 @@ class RealtimeEngine:
             for _, row in tail.iterrows()
         ]
 
-    def _record_close(self, ts: datetime, price: float, reason: str) -> None:
+    def _record_close(self, ts: datetime, price: float, reason: str, profit: float | None = None) -> None:
         assert self._bt is not None and self.position is not None
         trade = self._bt._close(self.position, ts, price, reason)
         packed = trade.to_dict()
+        if profit is not None:
+            packed["pnl"] = round(float(profit), 2)
+            packed["result"] = "win" if float(profit) > 0 else "loss"
+        pnl = float(packed["pnl"])
         self.trades.append(packed)
-        self.bank += trade.pnl
-        self.day_pnl += trade.pnl
+        self.bank += pnl
+        self.day_pnl += pnl
         self.peak = max(self.peak, self.bank)
         self.max_dd = max(self.max_dd, self.peak - self.bank)
         self.equity.append({"t": ts.isoformat(), "bank": round(self.bank, 2)})
@@ -576,6 +581,8 @@ class RealtimeEngine:
                     self.position["stop"] = pos["stop"]
                 if pos["take"]:
                     self.position["take"] = pos["take"]
+                if pos.get("entry"):
+                    self.position["entry"] = pos["entry"]
             self._mt5_profit = float(pos.get("profit") or 0)
             return
         self._mt5_profit = None
@@ -585,7 +592,10 @@ class RealtimeEngine:
             price = float(deal["price"]) if deal else float(self.position["entry"])
             ts = deal["time"] if deal else now
             reason = "mt5_sltp" if deal else "mt5_fechou"
-            self._record_close(ts, price, reason)
+            profit = None
+            if deal is not None and deal.get("profit") is not None:
+                profit = float(deal["profit"])
+            self._record_close(ts, price, reason, profit=profit)
 
     def _can_enter(self, now: datetime, *, live_mt5: bool) -> bool:
         if self._session is None:
@@ -602,6 +612,9 @@ class RealtimeEngine:
             if not self.mt5_info.get("trade_allowed"):
                 return False
             if not self.mt5_info.get("symbol"):
+                return False
+            live = self._live_bank()
+            if live is None or live < MIN_LIVE_BANK:
                 return False
         return True
 
@@ -623,8 +636,9 @@ class RealtimeEngine:
         bank = self.bank
         if self._will_send():
             live = self._live_bank()
-            if live is not None:
-                bank = live
+            if live is None or live < MIN_LIVE_BANK:
+                return 0.0
+            bank = live
         n = float(size_contracts(bank, self.lot))
         self.max_contracts = max(float(self.max_contracts), n)
         return n
@@ -682,6 +696,10 @@ class RealtimeEngine:
             return None
         if self.wait_reason and self.wait_reason not in {"pronto"}:
             return f"Sinal {sig.side.value} sem ordem: {self.wait_reason}."
+        if self._will_send():
+            live = self._live_bank()
+            if live is None or live < MIN_LIVE_BANK:
+                return f"Sinal {sig.side.value} sem ordem: banca MT5 abaixo de R$ {MIN_LIVE_BANK:.0f}."
         return None
 
     def _open_trade_row(self, pos: dict[str, Any] | None, open_meta: dict[str, Any]) -> dict[str, Any] | None:
@@ -725,6 +743,8 @@ class RealtimeEngine:
         if self.order_mode not in {"mt5", "prd"}:
             raise RuntimeError("Modo atual não envia ordem.")
         n = self._n_contracts()
+        if n < 1:
+            raise RuntimeError(f"Banca MT5 abaixo de R$ {MIN_LIVE_BANK:.0f}.")
         stop, take = self._bt.risk.levels(sig.side, entry, None)
         order_sig = Signal(side=sig.side, entry=entry, stop=stop, take=take, reason=sig.reason, predicted=sig.predicted)
         result = broker.send(order_sig, float(n))
@@ -769,35 +789,65 @@ class RealtimeEngine:
         }
         self.trades_today += 1
 
-    def _manage_open(self, broker: Mt5Broker | None, row: pd.Series, ts: datetime, now: datetime) -> None:
-        assert self._bt is not None and self._session is not None and self.position is not None
-        o = float(row["Abertura"])
-        h = float(row["Máximo"])
-        l = float(row["Mínimo"])
-        c = float(row["Fechamento"])
-        old_stop = float(self.position["stop"])
-        exit_price, reason = self._bt._manage(self.position, o, h, l, c)
-        new_stop = float(self.position["stop"])
+    def _trail_live(self, broker: Mt5Broker, mark: float | None) -> None:
+        if mark is None or self.position is None or self._bt is None:
+            return
         ticket = self.position.get("ticket")
-        if broker is not None and ticket and abs(new_stop - old_stop) >= 1:
+        if not ticket:
+            return
+        risk = self._bt.config.risk
+        if not risk.trailing_enabled:
+            return
+        old_stop = float(self.position["stop"])
+        side = self.position["side"]
+        entry = float(self.position["entry"])
+        if self._is_buy(side):
+            self.position["extreme"] = max(float(self.position.get("extreme") or entry), mark)
+            if self.position["extreme"] - entry >= risk.trailing_trigger_points:
+                new_stop = self.position["extreme"] - risk.trailing_distance_points
+                self.position["stop"] = max(old_stop, new_stop)
+        else:
+            self.position["extreme"] = min(float(self.position.get("extreme") or entry), mark)
+            if entry - self.position["extreme"] >= risk.trailing_trigger_points:
+                new_stop = self.position["extreme"] + risk.trailing_distance_points
+                self.position["stop"] = min(old_stop, new_stop)
+        new_stop = float(self.position["stop"])
+        if abs(new_stop - old_stop) >= 1:
             try:
                 broker.modify_sltp(int(ticket), new_stop, float(self.position["take"]))
             except Exception as exc:  # noqa: BLE001
                 self.error = f"trailing: {exc}"
+
+    def _flatten_live(self, broker: Mt5Broker, now: datetime) -> None:
+        if self.position is None:
+            return
+        ticket = self.position.get("ticket")
+        if not ticket:
+            return
+        try:
+            broker.close_position(
+                int(ticket), self.position["side"], float(self.position.get("contracts") or self._n_contracts())
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"close: {exc}"
+        self._sync_position(broker, now)
+
+    def _manage_open(self, broker: Mt5Broker | None, row: pd.Series, ts: datetime, now: datetime) -> None:
+        assert self._bt is not None and self._session is not None and self.position is not None
+        ticket = self.position.get("ticket")
+        if broker is not None and ticket:
+            self._trail_live(broker, float(row["Fechamento"]))
+            if self._session.flatten_day(ts) or self._session.flatten_day(now):
+                self._flatten_live(broker, now)
+            return
+        o = float(row["Abertura"])
+        h = float(row["Máximo"])
+        l = float(row["Mínimo"])
+        c = float(row["Fechamento"])
+        exit_price, reason = self._bt._manage(self.position, o, h, l, c)
         if exit_price is None and (self._session.flatten_day(ts) or self._session.flatten_day(now)):
             exit_price, reason = c, "fim_da_sessao"
         if exit_price is None:
-            return
-        if broker is not None and ticket:
-            try:
-                broker.close_position(
-                    int(ticket), self.position["side"], float(self.position.get("contracts") or self._n_contracts())
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.error = f"close: {exc}"
-            self._sync_position(broker, now)
-            if self.position is not None:
-                self._record_close(ts, float(exit_price), reason)
             return
         self._record_close(ts, float(exit_price), reason)
 
@@ -916,7 +966,12 @@ class RealtimeEngine:
             session=self._session,
         )
         if self.position is not None:
-            self._manage_open(broker if send else None, self._paper_manage_row(last, mark), now, now)
+            if send and self.position.get("ticket"):
+                self._trail_live(broker, mark)
+                if self._session.flatten_day(now):
+                    self._flatten_live(broker, now)
+            else:
+                self._manage_open(broker if send else None, self._paper_manage_row(last, mark), now, now)
         live_bar = bar_is_live(ts, now)
         sig = self._policy.from_candles(self._frame)
         self.last_signal = sig

@@ -236,7 +236,7 @@ export function AoVivoPage() {
         </p>
         <h1 className="mt-3 font-display text-4xl font-bold">Operação em tempo real</h1>
         <p className="mt-2 max-w-3xl text-muted-foreground">
-          {status}. 5 min · lote crescente / R$ 1.000 · best_candles_m5_1000_a
+          {status}. 5 min · lote 1 mini a partir de R$ 500 · +1 / R$ 1.000 · best_candles_m5_1000_a
           {snap.last_tick ? ` · tick ${clock(snap.last_tick)}` : ''}
           {isTodayStamp(snap.last_bar_time) ? ` · candle ${clock(snap.last_bar_time)}` : ''}
           {snap.feed?.detail ? ` · ${snap.feed.detail}` : ''}
