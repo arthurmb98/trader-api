@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -14,7 +17,7 @@ from trader.broker import Mt5Broker
 from trader.config import AppConfig
 from trader.data import frame_from_candles
 from trader.domain import Side, Signal
-from trader.feeds import StreamFeed
+from trader.feeds import BAR_MINUTES, StreamFeed
 from trader.live import (
     _position_dict,
     _position_from_dict,
@@ -43,6 +46,8 @@ DEFAULT_BANK = 1000.0
 POLL_SEC = 10.0
 ALIGN_SLACK_MS = 250.0
 CATCHUP_SEC = 1.0
+CLOUD_LOOKBACK = 250
+SESSION_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 def seconds_until_aligned(
@@ -63,6 +68,36 @@ def seconds_until_aligned(
 def is_m5_close_slot(now: datetime) -> bool:
     """True on the :00 ten-second slot of a 5-minute close."""
     return now.minute % 5 == 0 and now.second < 10
+
+
+def session_now() -> datetime:
+    """Wall clock in B3 time (naive), so Vercel UTC does not skip the gold window."""
+    return datetime.now(SESSION_TZ).replace(tzinfo=None)
+
+
+def cloud_state_path() -> Path:
+    raw = (os.environ.get("WIN_CLOUD_STATE") or "").strip()
+    if raw:
+        return Path(raw)
+    return Path("/tmp/trader_ao_vivo.json")
+
+
+def _load_cloud_state() -> dict[str, Any]:
+    path = cloud_state_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {"armed": False, "paused_at": None}
+    return {
+        "armed": bool(raw.get("armed")),
+        "paused_at": raw.get("paused_at"),
+    }
+
+
+def _save_cloud_state(state: dict[str, Any]) -> None:
+    path = cloud_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
 def load_live_config() -> AppConfig:
@@ -207,9 +242,10 @@ class RealtimeEngine:
             periods = live_period_stats(self.trades, None, None)
         avg_daily = float((periods.get("avg") or {}).get("daily", {}).get("avg") or 0.0)
         live_last = False
+        clock = session_now()
         if self.last_bar_time:
             try:
-                live_last = bar_is_live(datetime.fromisoformat(self.last_bar_time), datetime.now())
+                live_last = bar_is_live(datetime.fromisoformat(self.last_bar_time), clock)
             except ValueError:
                 live_last = False
         return {
@@ -861,7 +897,7 @@ class RealtimeEngine:
             task.cancel()
         self._persist()
 
-    def reset(self) -> None:
+    def _clear_books(self) -> None:
         self.done = False
         self.error = None
         self.processed_bar = None
@@ -878,6 +914,95 @@ class RealtimeEngine:
         self.max_dd = 0.0
         self.bank = self.initial_bank
         self.peak = self.initial_bank
+        self._frame = None
+        self.cursor = 0
+
+    def replay_today(self, now: datetime) -> None:
+        """Walk today's closed stream bars in order (serverless-safe, no background loop)."""
+        self.set_order_mode("paper")
+        self._clear_books()
+        self.day_key = now.date()
+        self.last_tick = now.isoformat(timespec="seconds")
+        if self._policy is None or self._session is None:
+            self._prepare_policy()
+        assert self._session is not None and self._policy is not None
+        try:
+            candles = self._stream.last_closed_candles(
+                self._stream.symbol, "m5", CLOUD_LOOKBACK, allow_file=False, now=now
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.feed_info = self._stream.status()
+            self.wait_reason = "aguardando_candle"
+            self.error = str(exc) if self._stream.origin != "none" else None
+            return
+        self.feed_info = self._stream.status()
+        if not candles:
+            self.wait_reason = session_wait_reason(
+                connected=True,
+                account=True,
+                demo=True,
+                symbol=self._stream.symbol,
+                trade_allowed=True,
+                now=now,
+                last_bar=None,
+                in_position=False,
+                session=self._session,
+            )
+            return
+        for idx in range(len(candles)):
+            last_c = candles[idx]
+            ts = last_c.timestamp
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.replace(tzinfo=None)
+            if ts.date() != now.date():
+                continue
+            if ts + timedelta(minutes=BAR_MINUTES) > now:
+                break
+            subset = candles[: idx + 1]
+            self._frame = frame_from_candles(subset, source_file="stream")
+            if self._frame is None or self._frame.empty:
+                continue
+            last = self._frame.iloc[-1]
+            self.cursor = len(self._frame) - 1
+            self.last_bar_time = ts.isoformat()
+            self._refresh_candles_tail()
+            if self.position is not None:
+                self._manage_open(None, last, ts, ts)
+            new_bar = self.last_bar_time != self.processed_bar
+            if new_bar and self._can_enter(ts, live_mt5=False):
+                sig = self._policy.from_candles(self._frame)
+                self.last_signal = sig
+                self.signals.append({"t": ts.isoformat(), **(_signal_dict(sig) or {})})
+                self.signals = self.signals[-200:]
+                if sig.side is not Side.FLAT:
+                    entry = float(last["Fechamento"])
+                    stop, take = RiskCalculator(self._cfg).levels(sig.side, entry, None)
+                    if planned_order(sig, entry, stop, take):
+                        self._open_paper(sig, entry, ts)
+                        if self.position is not None:
+                            self._manage_open(None, last, ts, ts)
+            if new_bar:
+                self.processed_bar = self.last_bar_time
+        last_bar = None
+        if self.last_bar_time:
+            try:
+                last_bar = datetime.fromisoformat(self.last_bar_time)
+            except ValueError:
+                last_bar = None
+        self.wait_reason = session_wait_reason(
+            connected=True,
+            account=True,
+            demo=True,
+            symbol=self._stream.symbol,
+            trade_allowed=True,
+            now=now,
+            last_bar=last_bar,
+            in_position=self.position is not None,
+            session=self._session,
+        )
+
+    def reset(self) -> None:
+        self._clear_books()
         if SESSION_PATH.exists():
             SESSION_PATH.unlink()
 
@@ -896,3 +1021,83 @@ def get_realtime_engine() -> RealtimeEngine:
         ENGINE = RealtimeEngine()
         ENGINE.load_saved()
     return ENGINE
+
+
+def _cloud_idle_snapshot(now: datetime) -> dict[str, Any]:
+    engine = RealtimeEngine()
+    engine.running = False
+    engine.last_tick = now.isoformat(timespec="seconds")
+    try:
+        engine._stream.last_closed_candles(engine._stream.symbol, "m5", LOOKBACK_BARS, allow_file=False, now=now)
+    except Exception as exc:  # noqa: BLE001
+        engine.error = str(exc)
+    engine.feed_info = engine._stream.status()
+    engine.wait_reason = "mercado_fechado"
+    try:
+        engine._prepare_policy()
+        if engine._session is not None:
+            engine.wait_reason = session_wait_reason(
+                connected=True,
+                account=True,
+                demo=True,
+                symbol=engine._stream.symbol,
+                trade_allowed=True,
+                now=now,
+                last_bar=None,
+                in_position=False,
+                session=engine._session,
+            )
+    except Exception as exc:  # noqa: BLE001
+        engine.error = str(exc)
+    return engine.snapshot()
+
+
+def cloud_snapshot(*, arm: bool | None = None, pause: bool = False, reset: bool = False) -> dict[str, Any]:
+    """Paper ao vivo for Vercel: replay today's clock feed on each request."""
+    now = session_now()
+    state = _load_cloud_state()
+    if reset:
+        _save_cloud_state({"armed": False, "paused_at": None})
+        snap = _cloud_idle_snapshot(now)
+        snap["running"] = False
+        return snap
+    if pause:
+        state = {"armed": False, "paused_at": now.isoformat(timespec="seconds")}
+        _save_cloud_state(state)
+    if arm:
+        state = {"armed": True, "paused_at": None}
+        _save_cloud_state(state)
+    else:
+        state = _load_cloud_state()
+    until = now
+    paused_at = state.get("paused_at")
+    if not state.get("armed") and paused_at:
+        try:
+            until = datetime.fromisoformat(str(paused_at))
+        except ValueError:
+            until = now
+    if not state.get("armed") and not paused_at:
+        snap = _cloud_idle_snapshot(now)
+        snap["running"] = False
+        return snap
+    engine = RealtimeEngine()
+    engine.replay_today(until)
+    engine.running = bool(state.get("armed"))
+    engine.last_tick = now.isoformat(timespec="seconds")
+    return engine.snapshot()
+
+
+def cloud_feeds() -> dict[str, Any]:
+    snap = cloud_snapshot()
+    return {
+        "source": snap.get("source") or "stream",
+        "order_mode": "paper",
+        "feeds": [
+            {
+                "key": "stream",
+                "label": "Simular (paper)",
+                "ready": bool((snap.get("feed") or {}).get("ready")),
+                "detail": (snap.get("feed") or {}).get("detail"),
+            }
+        ],
+    }

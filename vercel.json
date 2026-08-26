@@ -10,7 +10,7 @@
         "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
       },
       "api/realtime/**/*.py": {
-        "maxDuration": 10,
+        "maxDuration": 60,
         "excludeFiles": "{web/**,mt5/**,.git/**,datasets/WIN$D*,datasets/*_train.csv,datasets/WINJ*,datasets/WINM*}"
       }
     },

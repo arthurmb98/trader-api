@@ -9,12 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trader.fnhttp import JsonHandler  # noqa: E402
 
-from _common import LOCAL_ONLY  # noqa: E402
+from _common import send_cloud  # noqa: E402
 
 
 class handler(JsonHandler):
     def do_GET(self) -> None:
-        self.send_json(400, LOCAL_ONLY)
+        send_cloud(self)
 
     def do_POST(self) -> None:
-        self.send_json(400, LOCAL_ONLY)
+        send_cloud(self, arm=True)

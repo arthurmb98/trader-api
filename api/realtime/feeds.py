@@ -8,10 +8,12 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trader.fnhttp import JsonHandler  # noqa: E402
-
-from _common import LOCAL_ONLY  # noqa: E402
+from trader.realtime import cloud_feeds  # noqa: E402
 
 
 class handler(JsonHandler):
     def do_GET(self) -> None:
-        self.send_json(400, LOCAL_ONLY)
+        try:
+            self.send_json(200, cloud_feeds())
+        except Exception as exc:  # noqa: BLE001
+            self.send_json(400, {"detail": str(exc)})

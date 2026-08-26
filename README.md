@@ -107,7 +107,7 @@ Em outro terminal: `cd web && npm run dev`. Abra http://127.0.0.1:5173/ao-vivo e
 
 Opcional no `.env` (não commitar): `WIN_STREAM_URL`, `WIN_STREAM_TOKEN`, `WIN_YAHOO_SYMBOL`, `WIN_DISABLE_YAHOO=1` para forçar só o demo WIN.
 
-A apresentação no Vercel continua só com o estudo e o replay paper. `/api/realtime` no host devolve 400.
+A apresentação no Vercel inclui estudo, replay e o **Ao vivo paper** (mesmo setup, candles Yahoo/`^BVSP` ou demo WIN no relógio de São Paulo). Cada request da function reprocessa o dia — não há processo 24h nem MT5. Armar em https://trader-api-psi.vercel.app/ao-vivo.
 
 ## Estrutura
 

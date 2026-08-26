@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 
 os.environ["WIN_DISABLE_YAHOO"] = "1"
@@ -22,7 +23,13 @@ from trader.mt5_session import (
     session_wait_reason,
 )
 from trader.feeds import StreamFeed, clock_demo_candles, parse_stream_payload, parse_yahoo_chart
-from trader.realtime import ALIGN_SLACK_MS, is_m5_close_slot, RealtimeEngine, seconds_until_aligned
+from trader.realtime import (
+    ALIGN_SLACK_MS,
+    RealtimeEngine,
+    cloud_snapshot,
+    is_m5_close_slot,
+    seconds_until_aligned,
+)
 from trader.replay import load_named_config
 from trader.risk import RiskCalculator
 
@@ -374,4 +381,38 @@ def test_m5_close_catchup_only_on_zero_slot() -> None:
     assert not is_m5_close_slot(datetime(2026, 8, 24, 14, 35, 10))
     assert not is_m5_close_slot(datetime(2026, 8, 24, 14, 36, 0))
     assert is_m5_close_slot(datetime(2026, 8, 24, 14, 30, 9))
+
+
+def test_replay_today_walks_closed_demo_bars() -> None:
+    early = RealtimeEngine()
+    early.replay_today(datetime(2026, 8, 24, 9, 19))
+    late = RealtimeEngine()
+    late.replay_today(datetime(2026, 8, 24, 9, 26))
+    assert late.last_bar_time == "2026-08-24T09:20:00"
+    assert late.last_bar_time != early.last_bar_time
+    assert late._frame is not None
+    assert len(late._frame) >= 2
+
+
+def test_cloud_snapshot_arms_without_background_loop() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        path = handle.name
+    os.environ["WIN_CLOUD_STATE"] = path
+    try:
+        idle = cloud_snapshot()
+        assert idle["running"] is False
+        armed = cloud_snapshot(arm=True)
+        assert armed["running"] is True
+        assert armed["order_mode"] == "paper"
+        paused = cloud_snapshot(pause=True)
+        assert paused["running"] is False
+        cleared = cloud_snapshot(reset=True)
+        assert cleared["running"] is False
+        assert cleared["n_trades"] == 0
+    finally:
+        os.environ.pop("WIN_CLOUD_STATE", None)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 

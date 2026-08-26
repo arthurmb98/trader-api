@@ -1,3 +1,12 @@
 from __future__ import annotations
 
-LOCAL_ONLY = {"detail": "Ao vivo com MT5 só roda localmente (python -m trader serve)."}
+from typing import Any
+
+
+def send_cloud(handler: Any, **opts: Any) -> None:
+    from trader.realtime import cloud_snapshot
+
+    try:
+        handler.send_json(200, cloud_snapshot(**opts))
+    except Exception as exc:  # noqa: BLE001
+        handler.send_json(400, {"detail": str(exc)})
