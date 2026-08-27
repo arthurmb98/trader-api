@@ -1167,7 +1167,7 @@ def test_skip_reason_when_daily_trade_cap_hit() -> None:
     )
     text = engine._skip_reason()
     assert text is not None
-    assert "10" in text
+    assert "8" in text
     assert "teto" in text.lower()
 
 

@@ -26,7 +26,7 @@ risk:
   be_lock_points: 10.0
   invalidate_tp_points: 30.0
   daily_loss_points: 0.0
-  max_trades_per_day: 10
+  max_trades_per_day: 8
 filters:
   session_start: 09:15
   session_end: '17:00'
